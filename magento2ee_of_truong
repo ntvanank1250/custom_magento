@@ -1,0 +1,3567 @@
+import json
+import re
+import copy
+from cartmigration.libs.utils import *
+from cartmigration.models.cart.magento.magento2 import LeCartMagentoMagento2
+
+class LeCartMagentoMagento2ee(LeCartMagentoMagento2):
+
+	def display_config_source(self):
+		return response_success()
+
+	def attribute_import(self, convert, attribute, attributes_ext):
+		dimension_code = ['length', 'width', 'height']
+		if convert['code'] in dimension_code:
+			convert['code'] = 'ts_dimensions_' + convert['code']
+		return super().attribute_import(convert, attribute, attributes_ext)
+
+	def after_attribute_import(self, attribute_id, convert, attribute, attributes_ext):
+		dimension_code = ['length', 'width', 'height']
+		if convert['code'] in dimension_code:
+			convert['code'] = 'ts_dimensions_' + convert['code']
+		return super().after_attribute_import(attribute_id, convert, attribute, attributes_ext)
+
+	def clear_target_categories(self):
+		next_clear = {
+			'result': 'process',
+			'function': 'clear_target_products',
+		}
+		if not self._notice['config']['categories']:
+			self._notice['target']['clear'] = next_clear
+			return next_clear
+		tables = [
+			'catalog_category_entity_datetime',
+			'catalog_category_entity_decimal',
+			'catalog_category_entity_int',
+			'catalog_category_entity_text',
+			'catalog_category_entity_varchar',
+			'catalog_category_entity',
+			'catalog_url_rewrite_product_category',
+			'sequence_catalog_category',
+			'url_rewrite',
+		]
+
+		root_category_ids = list()
+
+		root_category_data = self._notice['target']['category_data']
+		row_category_data = self._notice['target']['category_row_data']
+		root_category_ids = list(root_category_data.keys())
+		row_category_ids = list(row_category_data.keys())
+		root_category_ids.append(1)
+		row_category_ids.append(1)
+
+		root_ids_in_condition = self.list_to_in_condition(root_category_ids)
+		row_ids_in_condition = self.list_to_in_condition(row_category_ids)
+		for table in tables:
+			where = ' WHERE row_id NOT IN ' + row_ids_in_condition
+
+			if table == 'url_rewrite':
+				where = ' WHERE entity_type LIKE "category"'
+			if table == 'catalog_url_rewrite_product_category':
+				where = ' '
+			if table == 'sequence_catalog_category':
+				where = ' WHERE sequence_value NOT IN ' + root_ids_in_condition
+
+			clear_table = self.get_connector_data(self.get_connector_url('query'), {
+				'query': json.dumps({
+					'type': 'query', 'query': "DELETE FROM `_DBPRF_" + table + "`" + where
+				})
+			})
+			if (not clear_table) or (clear_table['result'] != 'success'):
+				self.log("Could not empty table " + table, 'clear')
+				continue
+		self._notice['target']['clear'] = next_clear
+
+		return next_clear
+
+	def clear_target_products(self):
+		next_clear = {
+			'result': 'process',
+			'function': 'clear_target_customers',
+		}
+		self._notice['target']['clear'] = next_clear
+		if not self._notice['config']['products']:
+			return next_clear
+		tables = [
+			'catalog_category_product_index',
+			'catalog_category_product',
+			'cataloginventory_stock_status_idx',
+			'cataloginventory_stock_status',
+			'cataloginventory_stock_item',
+			'inventory_source_item',
+			'catalog_product_website',
+			'catalog_product_super_attribute_label',
+			'catalog_product_super_link',
+			'catalog_product_relation',
+			'catalog_product_super_attribute',
+			'catalog_product_option_price',
+			'catalog_product_option_title',
+			'catalog_product_option_type_price',
+			'catalog_product_option_type_title',
+			'catalog_product_option_type_value',
+			'catalog_product_option',
+			'catalog_product_entity_media_gallery_value_to_entity',
+			'catalog_product_entity_media_gallery_value',
+			'catalog_product_entity_media_gallery',
+			'catalog_product_entity_tier_price',
+			'catalog_product_entity_varchar',
+			'catalog_product_entity_datetime',
+			'catalog_product_entity_decimal',
+			'catalog_product_entity_text',
+			'catalog_product_entity_int',
+			'catalog_product_link',
+			'catalog_product_bundle_selection',
+			'sequence_product_bundle_selection'
+			'catalog_product_bundle_option_value',
+			'catalog_product_bundle_option',
+			'sequence_product_bundle_option',
+			'catalog_url_rewrite_product_category',
+			'url_rewrite',
+			'catalog_product_entity',
+			'sequence_product'
+		]
+		if self.convert_version(self._notice['target']['config']['version'], 2) >= 230:
+			tables.insert(0, 'inventory_stock_1')
+		for table in tables:
+			where = ''
+
+			if table == 'url_rewrite':
+				where = ' WHERE entity_type like "product"'
+			clear_table = self.get_connector_data(self.get_connector_url('query'), {
+				'query': json.dumps({
+					'type': 'query', 'query': "DELETE FROM `_DBPRF_" + table + "`" + where
+				})
+			})
+			if (not clear_table) or (clear_table['result'] != 'success'):
+				self.log("Could not empty table " + table, 'clear')
+				continue
+		return next_clear
+
+	def clear_target_categories_demo(self):
+		next_clear = {
+			'result': 'process',
+			'function': 'clear_target_products_demo',
+		}
+		if not self._notice['config']['categories']:
+			self._notice['target']['clear_demo'] = next_clear
+			return next_clear
+		where = {
+			'migration_id': self._migration_id,
+			'type': self.TYPE_CATEGORY
+		}
+		categories = self.select_obj(TABLE_MAP, where)
+		category_ids = list()
+		if categories['result'] == 'success':
+			category_id_map = duplicate_field_value_from_list(categories['data'], 'id_desc')
+			category_ids = list(set(category_ids + category_id_map))
+		if not category_ids:
+			return next_clear
+		category_id_con = self.list_to_in_condition(category_ids)
+		tables = [
+			'catalog_category_entity_datetime',
+			'catalog_category_entity_decimal',
+			'catalog_category_entity_int',
+			'catalog_category_entity_text',
+			'catalog_category_entity_varchar',
+			'catalog_category_entity',
+			'catalog_url_rewrite_product_category',
+			'url_rewrite',
+			'catalog_category_product',
+			'sequence_catalog_category'
+		]
+
+		for table in tables:
+			where = ' WHERE row_id IN ' + category_id_con
+
+			if table == 'url_rewrite':
+				where = ' WHERE entity_type like "category" AND entity_id IN ' + category_id_con
+			if table == 'catalog_url_rewrite_product_category' or table == 'catalog_category_product':
+				where = ' WHERE category_id IN ' + category_id_con
+			if table == 'sequence_catalog_category':
+				where = 'WHERE sequence_value IN ' + category_id_con
+			clear_table = self.get_connector_data(self.get_connector_url('query'), {
+				'query': json.dumps({
+					'type': 'query', 'query': "DELETE FROM `_DBPRF_" + table + "`" + where
+				})
+			})
+			if (not clear_table) or (clear_table['result'] != 'success'):
+				self.log("Could not empty table " + table, 'clear')
+				continue
+		self._notice['target']['clear_demo'] = next_clear
+
+		return next_clear
+
+	def clear_target_products_demo(self):
+		next_clear = {
+			'result': 'process',
+			'function': 'clear_target_orders_demo',
+		}
+		if not self._notice['config']['products']:
+			self._notice['target']['clear_demo'] = next_clear
+			return next_clear
+		where = {
+			'migration_id': self._migration_id,
+			'type': self.TYPE_PRODUCT
+		}
+		products = self.select_page(TABLE_MAP, where, self.LIMIT_CLEAR_DEMO)
+
+		product_ids = list()
+		if products['result'] == 'success':
+			product_id_map = duplicate_field_value_from_list(products['data'], 'id_desc')
+			product_ids = list(set(product_ids + product_id_map))
+		if not product_ids:
+			self._notice['target']['clear_demo'] = next_clear
+			return next_clear
+		product_id_con = self.list_to_in_condition(product_ids)
+		tables = [
+			'catalog_category_product',
+			'cataloginventory_stock_status',
+			'cataloginventory_stock_item',
+			'catalog_product_website',
+			'catalog_product_super_attribute_label',
+			'catalog_product_super_link',
+			'catalog_product_relation',
+			'catalog_product_super_attribute',
+			'catalog_product_option_price',
+			'catalog_product_option_title',
+			'catalog_product_option_type_price',
+			'catalog_product_option_type_title',
+			'catalog_product_option_type_value',
+			'catalog_product_option',
+			'catalog_product_entity_media_gallery_value_to_entity',
+			'catalog_product_entity_media_gallery_value',
+			'catalog_product_entity_tier_price',
+			'catalog_product_entity_varchar',
+			'catalog_product_entity_datetime',
+			'catalog_product_entity_decimal',
+			'catalog_product_entity_text',
+			'catalog_product_entity_int',
+			'catalog_product_link',
+			'catalog_product_bundle_selection',
+			'catalog_product_bundle_option_value',
+			'catalog_product_bundle_option',
+			'catalog_url_rewrite_product_category',
+			'url_rewrite',
+			'catalog_product_entity',
+			'sequence_product'
+		]
+		table_key_product_id = ['cataloginventory_stock_status', 'cataloginventory_stock_item',
+								'catalog_product_website', 'catalog_product_link',
+								'catalog_url_rewrite_product_category', 'catalog_product_option',
+								'catalog_category_product']
+		if self.convert_version(self._notice['target']['config']['version'], 2) >= 230:
+			tables.insert(0, 'inventory_stock_1')
+			table_key_product_id.insert(0, 'inventory_stock_1')
+		table_option = ['catalog_product_option_price',
+						'catalog_product_option_title',
+						'catalog_product_option_type_price',
+						'catalog_product_option_type_title',
+						'catalog_product_option_type_value', ]
+		for table in tables:
+			where = ' WHERE row_id IN ' + product_id_con
+
+			if table == 'url_rewrite':
+				where = ' WHERE entity_type like "product" AND entity_id IN ' + product_id_con
+
+			if table in table_key_product_id:
+				where = ' WHERE product_id IN ' + product_id_con
+			if table == 'catalog_product_relation':
+				where = ' WHERE parent_id IN ' + product_id_con + ' OR child_id IN ' + product_id_con
+
+			if table == 'catalog_product_bundle_option':
+				where = ' WHERE parent_id IN ' + product_id_con
+
+			if table in ['catalog_product_bundle_option_value', 'catalog_product_bundle_selection']:
+				where = ' WHERE option_id IN (SELECT option_id FROM _DBPRF_catalog_product_bundle_option WHERE parent_id IN' + product_id_con + ')'
+
+			if table in table_option:
+				option_id_con = " (SELECT option_id FROM _DBPRF_catalog_product_option WHERE product_id IN " + product_id_con + ")"
+				where = ' WHERE option_id IN ' + option_id_con
+				if table in ['catalog_product_option_type_title', 'catalog_product_option_type_price']:
+					where = " WHERE option_type_id IN (SELECT option_type_id FROM _DBPRF_catalog_product_option_type_value " + where + ")"
+			if table == 'sequence_product':
+				where = 'WHERE sequence_value IN ' + product_id_con
+			clear_table = self.get_connector_data(self.get_connector_url('query'), {
+				'query': json.dumps({
+					'type': 'query', 'query': "DELETE FROM `_DBPRF_" + table + "`" + where
+				})
+			})
+			if (not clear_table) or (clear_table['result'] != 'success'):
+				self.log("Could not empty table " + table, 'clear')
+				continue
+		self.delete_map_demo(self.TYPE_PRODUCT, product_ids)
+		if to_len(product_ids) < self.LIMIT_CLEAR_DEMO:
+			self._notice['target']['clear_demo'] = next_clear
+			return next_clear
+		return self._notice['target']['clear_demo']
+
+	# TODO: CATEGORY
+	def prepare_categories_import(self):
+		return self
+
+	def prepare_categories_export(self):
+		return self
+
+	def get_categories_main_export(self):
+		id_src = self._notice['process']['categories']['id_src']
+		limit = self._notice['setting']['categories']
+		query = {
+			'type': 'select',
+			'query': "SELECT * FROM _DBPRF_catalog_category_entity WHERE "
+					 "level > 1 AND entity_id > " + to_str(id_src) + " ORDER BY entity_id ASC LIMIT " + to_str(limit)
+		}
+		categories = self.select_data_connector(query, 'categories')
+		if not categories or categories['result'] != 'success':
+			return response_error()
+		return categories
+
+	def get_categories_ext_export(self, categories):
+		url_query = self.get_connector_url('query')
+		category_ids = duplicate_field_value_from_list(categories['data'], 'entity_id')
+		category_id_query = self.list_to_in_condition(category_ids)
+		row_ids = duplicate_field_value_from_list(categories['data'], 'row_id')
+		row_id_query = self.list_to_in_condition(row_ids)
+		store_id_con = self.get_con_store_select()
+		if store_id_con:
+			store_id_con = ' AND ' + store_id_con
+		categories_ext_queries = {
+			'catalog_category_entity_varchar': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity_varchar WHERE row_id IN " + row_id_query,
+			},
+			'catalog_category_entity_text': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity_text WHERE row_id IN " + row_id_query,
+			},
+			'catalog_category_entity_int': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity_int WHERE row_id IN " + row_id_query ,
+			},
+			'catalog_category_entity_decimal': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity_decimal WHERE row_id IN " +
+						 row_id_query ,
+			},
+			'catalog_category_entity_datetime': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity_datetime WHERE row_id IN " +
+						 row_id_query ,
+			},
+			'eav_attribute': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_eav_attribute WHERE entity_type_id = " + self._notice['src']['extends'][
+					'catalog_category']
+			},
+			'core_url_rewrite': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_url_rewrite WHERE entity_type = 'category'  AND entity_id IN " +
+						 category_id_query + " AND is_autogenerated = 1 " + store_id_con
+			}
+		}
+		categories_ext = self.select_multiple_data_connector(categories_ext_queries, 'categories_primary')
+		if not categories_ext or (categories_ext['result'] != 'success'):
+			return response_error()
+		categories_ext_rel_queries = {
+		}
+		if categories_ext_rel_queries:
+			categories_ext_rel = self.get_connector_data(self.get_connector_url('query'), {
+				'serialize': True,
+				'query': json.dumps(categories_ext_rel_queries)
+			})
+			if not categories_ext_rel or categories_ext_rel['result'] != 'success':
+				return response_error()
+			categories_ext = self.sync_connector_object(categories_ext, categories_ext_rel)
+		return categories_ext
+
+	def get_categories_parent(self, parent_id, child_lv):
+		category_exist = self.get_map_field_by_src(self.TYPE_CATEGORY, parent_id, None, 'id_src')
+		if category_exist:
+			return {
+				'result': 'success',
+				'msg': '',
+				'data': {
+					'id': parent_id,
+					'level': to_int(child_lv) - 1
+				}
+			}
+		categories = self.get_connector_data(self.get_connector_url('query'), {
+			'query': json.dumps({
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_catalog_category_entity WHERE entity_id = " + to_str(parent_id)
+			})
+		})
+		if (not categories) or (categories['result'] != 'success'):
+			return response_warning()
+		categories_ext = self.get_categories_ext_export(categories)
+		if (not categories_ext) or (categories_ext['result'] != 'success'):
+			return response_warning()
+		category = categories['data'][0]
+		return self.convert_category_export(category, categories_ext)
+
+	def convert_category_export(self, category, categories_ext):
+		category['level'] = to_len(category['path'].split('/')) - 1
+		category_data = self.construct_category()
+		parent = self.construct_category_parent()
+		category_data = self.add_construct_default(category_data)
+		parent = self.add_construct_default(parent)
+		code_parent = ''
+		if category['parent_id'] and to_int(category['level']) > 2:
+			if to_int(category['parent_id']) in self.cat_parent:
+				self.log_primary('categories', 'parent', category['cat_id'])
+				return response_error()
+			self.cat_parent.append(to_int(category['parent_id']))
+
+			parent = self.get_categories_parent(category['parent_id'], category['level'])
+			if parent['result'] != 'success':
+				return response_warning("Could not convert.")
+			parent = parent['data']
+		# code_parent = parent['url_key']
+		else:
+			parent['id'] = category['parent_id']
+			parent['level'] = 1
+		eav_attribute = dict()
+		for row in categories_ext['data']['eav_attribute']:
+			eav_attribute[row['attribute_code']] = row['attribute_id']
+		entity_varchar = get_list_from_list_by_field(categories_ext['data']['catalog_category_entity_varchar'],
+													 'row_id', category['row_id'])
+		entity_text = get_list_from_list_by_field(categories_ext['data']['catalog_category_entity_text'], 'row_id',
+												  category['row_id'])
+		entity_int = get_list_from_list_by_field(categories_ext['data']['catalog_category_entity_int'], 'row_id',
+												 category['row_id'])
+		# self.log(entity_varchar, 'entity_varchar')
+		# self.log(entity_text, 'entity_text')
+		# self.log(entity_int, 'entity_int')
+		is_active = get_list_from_list_by_field(entity_int, 'attribute_id', eav_attribute['is_active'])
+		is_active_def = get_row_value_from_list_by_field(is_active, 'store_id', 0, 'value')
+		include_in_menu = get_list_from_list_by_field(entity_int, 'attribute_id', eav_attribute['include_in_menu'])
+		include_in_menu_def = get_row_value_from_list_by_field(include_in_menu, 'store_id', 0, 'value')
+		images = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['image'])
+		image_def_path = get_row_value_from_list_by_field(images, 'store_id', 0, 'value')
+		category_data['id'] = category['entity_id']
+		category_data['level'] = category['level']
+		category_data['parent'] = parent
+		category_data['active'] = True if to_int(is_active_def) == 1 else False
+		if image_def_path and image_def_path != 'no_selection':
+			category_data['thumb_image']['url'] = self.get_url_suffix(self._notice['src']['config']['image_category'])
+			category_data['thumb_image']['path'] = image_def_path
+		category_data['sort_order'] = 1
+		category_data['created_at'] = category['created_at']
+		category_data['updated_at'] = category['updated_at']
+		category_data['category'] = category
+		category_data['categories_ext'] = categories_ext
+		category_data['include_in_menu'] = to_int(include_in_menu_def)
+
+		names = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['name'])
+		name_def = get_row_value_from_list_by_field(names, 'store_id', 0, 'value')
+		descriptions = get_list_from_list_by_field(entity_text, 'attribute_id', eav_attribute['description'])
+		description_def = get_row_value_from_list_by_field(descriptions, 'store_id', 0, 'value')
+		meta_titles = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['meta_title'])
+		meta_title_def = get_row_value_from_list_by_field(meta_titles, 'store_id', 0, 'value')
+		meta_keywords = get_list_from_list_by_field(entity_text, 'attribute_id', eav_attribute['meta_keywords'])
+		meta_keywords_def = get_row_value_from_list_by_field(meta_keywords, 'store_id', 0, 'value')
+		meta_descriptions = get_list_from_list_by_field(entity_text, 'attribute_id', eav_attribute['meta_description'])
+		meta_description_def = get_row_value_from_list_by_field(meta_descriptions, 'store_id', 0, 'value')
+		is_anchor = get_list_from_list_by_field(entity_int, 'attribute_id', eav_attribute['is_anchor'])
+		is_anchor_def = get_row_value_from_list_by_field(is_anchor, 'store_id', 0, 'value')
+		display_mode = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['display_mode'])
+		display_mode_def = get_row_value_from_list_by_field(display_mode, 'store_id', 0, 'value')
+		url_key = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['url_key'])
+		url_key_def = get_row_value_from_list_by_field(url_key, 'store_id', 0, 'value')
+		url_path = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['url_path'])
+		url_path_def = get_row_value_from_list_by_field(url_path, 'store_id', 0, 'value')
+		category_data['is_anchor'] = is_anchor_def if is_anchor_def else 0
+		category_data['url_key'] = url_key_def if url_key_def else ''
+		category_data['code'] = code_parent + '/' + url_key_def if code_parent else url_key_def
+		category_data['url_path'] = url_path_def if url_path_def else ''
+		category_data['display_mode'] = display_mode_def if display_mode_def else ''
+		category_data['name'] = name_def if name_def else ''
+		category_data['description'] = description_def if description_def else ''
+		category_data['meta_title'] = meta_title_def if meta_title_def else ''
+		category_data['meta_keywords'] = meta_keywords_def if meta_keywords_def else ''
+		category_data['meta_description'] = meta_description_def if meta_description_def else ''
+
+		# for
+		for language_id in self._notice['src']['languages_select']:
+			category_language_data = self.construct_category_lang()
+			category_language_data['name'] = get_row_value_from_list_by_field(names, 'store_id', language_id, 'value')
+			category_language_data['description'] = get_row_value_from_list_by_field(descriptions, 'store_id',
+																					 language_id, 'value')
+			category_language_data['meta_title'] = get_row_value_from_list_by_field(meta_titles, 'store_id',
+																					language_id, 'value')
+			category_language_data['meta_keywords'] = get_row_value_from_list_by_field(meta_keywords, 'store_id',
+																					   language_id, 'value')
+			category_language_data['meta_description'] = get_row_value_from_list_by_field(meta_descriptions,
+																						  'store_id',
+																						  language_id, 'value')
+			category_language_data['display_mode'] = get_row_value_from_list_by_field(display_mode, 'store_id',
+																					  language_id, 'value')
+			category_language_data['url_key'] = get_row_value_from_list_by_field(url_key, 'store_id', language_id,
+																				 'value')
+			category_language_data['url_path'] = get_row_value_from_list_by_field(url_path, 'store_id', language_id,
+																				  'value')
+			category_language_data['is_anchor'] = get_row_value_from_list_by_field(is_anchor, 'store_id', language_id,
+																				   'value')
+			category_data['languages'][language_id] = category_language_data
+		# endfor
+
+		url_rewrite = get_list_from_list_by_field(categories_ext['data']['core_url_rewrite'], 'entity_id',
+												  category['entity_id'])
+		category_data['url_rewrite'] = list()
+		for rewrite in url_rewrite:
+			rewrite_data = dict()
+			rewrite_data['store_id'] = rewrite['store_id']
+			rewrite_data['request_path'] = rewrite['request_path']
+			rewrite_data['description'] = rewrite['description']
+			category_data['url_rewrite'].append(rewrite_data)
+		return response_success(category_data)
+
+	def get_category_id_import(self, convert, category, categories_ext):
+		return category['entity_id']
+
+	def check_category_import(self, convert, category, categories_ext):
+		category_id = self.get_map_field_by_src(self.TYPE_CATEGORY, convert['id'])
+		if category_id:
+			category_data = {
+				'children_count': convert.get('category', {}).get('children_count', 0)
+			}
+			category_id = self.import_category_data_connector(
+				self.create_update_query_connector('catalog_category_entity', category_data, {'entity_id': category_id}))
+		return True if category_id else False
+
+	def router_category_import(self, convert, category, categories_ext):
+		return response_success('category_import')
+
+	def before_category_import(self, convert, category, categories_ext):
+		return response_success()
+
+	def category_import(self, convert, category, categories_ext):
+		parent_data = list()
+		# if
+		if convert['parent'] and (convert['parent']['id'] != convert['id']) and (int(convert['level']) > 2) and (
+				convert['parent']['id'] or convert['parent']['code']):
+			parent_import = self.import_category_parent(convert['parent'])
+			if parent_import['result'] != 'success':
+				return response_warning('Could not import parent')
+			parent_import_data = parent_import['data']
+			for parent_row in parent_import_data:
+				row = {
+					'parent_id': parent_row['data'],
+					'cate_path': parent_row['cate_path'],
+					'value': parent_row['value']
+				}
+				parent_data.append(row)
+		else:
+			if convert['parent']['id'] in self._notice['map']['category_data']:
+				parent_ids = self._notice['map']['category_data'][convert['parent']['id']]
+				for parent_id in parent_ids:
+					row = {
+						'parent_id': parent_id,
+						'cate_path': '1/' + parent_id,
+						'value': ''
+					}
+					parent_data.append(row)
+			else:
+				self.log_primary(self.TYPE_CATEGORY, "not in stores selected", convert['id'])
+
+				return response_warning()
+		# cate_path = '1/' + self._notice['map']['category_data'][convert['parent']['id']]
+		# endif
+		response = list()
+		for parent_row in parent_data:
+			sequence_value = self.import_category_data_connector({
+				'type': 'insert',
+				'query': 'INSERT INTO `_DBPRF_sequence_catalog_category` () VALUES ()'
+			})
+			if not sequence_value:
+				return response_error()
+			parent_id = parent_row['parent_id']
+			cate_path = parent_row['cate_path']
+			category_data = {
+				'entity_id': sequence_value,
+				'attribute_set_id': 3,
+				'parent_id': parent_id,
+
+				'created_in': 1,
+				'updated_in': '2147483647',
+				'created_at': convert['created_at'] if convert['created_at'] else get_current_time(),
+				'updated_at': convert['updated_at'] if convert['updated_at'] else get_current_time(),
+				'path': cate_path,
+				'position': convert.get('category', {}).get('position', 0),
+				'level': convert.get('level', 0),
+				'children_count': convert.get('category', {}).get('children_count', 0)
+			}
+			category_id = self.import_category_data_connector(
+				self.create_insert_query_connector('catalog_category_entity', category_data), True, convert['id'])
+			if not category_id:
+				return response_warning(self.warning_import_entity(self.TYPE_CATEGORY, convert['id']))
+			url_key = self.convert_attribute_code(convert['name'].replace('&', ''))
+			if parent_row['value']:
+				url_key = parent_row['value'] + '/' + url_key
+			update_path = self.import_category_data_connector(
+				self.create_update_query_connector('catalog_category_entity',
+												   {'path': cate_path + '/' + to_str(sequence_value)},
+												   {'entity_id': sequence_value}), False)
+			if not update_path:
+				return response_error(self.warning_import_entity(self.TYPE_CATEGORY, convert['id']))
+			self.insert_map(self.TYPE_CATEGORY, convert['id'], sequence_value, convert['code'], cate_path + '/' + to_str(category_id), url_key)
+			response_row = response_success(category_id)
+			response_row['cate_path'] = cate_path + '/' + to_str(category_id)
+			response_row['value'] = url_key
+			response.append(response_row)
+		return response_success(response)
+
+	def import_category_parent(self, parent):
+		parent_data = list()
+		parent_exist = self.select_category_map(parent['id'])
+		if parent_exist:
+			for parent_row in parent_exist:
+				res = response_success(parent_row['id_desc'])
+				res['cate_path'] = parent_row['code_desc']
+				res['value'] = parent_row['value']
+				parent_data.append(res)
+			return response_success(parent_data)
+		parent_import = self.category_import(parent, None, None)
+		if parent_import['result'] != 'success':
+			return parent_import
+		parent_import_data = parent_import['data']
+		for parent_row_import in parent_import_data:
+			if parent_row_import['result'] == 'success':
+				self.after_category_import(parent_row_import['data'], parent, None, None)
+		return parent_import
+
+	def after_category_import(self, category_id, convert, category, categories_ext):
+		all_queries = list()
+		category_eav_attribute_queries = {
+			'eav_attribute': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_eav_attribute WHERE entity_type_id = 3",
+			}
+		}
+		category_eav_attribute = self.get_connector_data(self.get_connector_url('query'), {
+			'serialize': True,
+			'query': json.dumps(category_eav_attribute_queries)
+		})
+		category_eav_attribute_data = dict()
+		for attribute in category_eav_attribute['data']['eav_attribute']:
+			if attribute['backend_type'] != 'static':
+				if not attribute['attribute_code'] in category_eav_attribute_data:
+					category_eav_attribute_data[attribute['attribute_code']] = dict()
+				category_eav_attribute_data[attribute['attribute_code']]['attribute_id'] = attribute['attribute_id']
+				category_eav_attribute_data[attribute['attribute_code']]['backend_type'] = attribute['backend_type']
+
+		url_image = self.get_connector_url('image')
+		image_name = None
+		# if
+		if convert['thumb_image']['url'] and convert['thumb_image']['path']:
+			# if
+			if (not ('ignore_image' in self._notice['config'])) or (not self._notice['config']['ignore_image']):
+				image_process = self.process_image_before_import(convert['thumb_image']['url'], convert['thumb_image']['path'])
+				image_name = self.uploadImageConnector(image_process, self.add_prefix_path(self.make_magento_image_path(image_process['path']) + os.path.basename(image_process['path']), self._notice['target']['config']['image_category']))
+				if image_name:
+					image_name = self.remove_prefix_path(image_name, self._notice['target']['config']['image_category'])
+				# image_import = self.get_connector_data(url_image, {
+				# 	'images': json.dumps({
+				# 		'ci': {
+				# 			'type': 'download',
+				# 			'path': self.add_prefix_path(os.path.basename(image_process['path']),
+				# 										 self._notice['target']['config']['image_category']),
+				# 			'params': {
+				# 				'url': image_process['url'],
+				# 				'rename': True
+				# 			}
+				# 		}
+				# 	})
+				# })
+				# if image_import and image_import['result'] == 'success':
+				# 	image_import_path = image_import['data']['ci']
+				# 	if image_import_path:
+				# 		image_name = self.make_magento_image_path(convert['thumb_image']['path']) + os.path.basename(
+				# 			image_import_path)
+
+			# endif
+			# else
+			else:
+				image_name = convert['thumb_image']['path']
+		# endelse
+		# endif
+
+		cate_url_key = self.get_product_url_key(convert['url_key'], 0, convert['name'])
+		cate_url_path = self.get_product_url_path(convert['url_path'], 0, cate_url_key)
+		insert_attribute_data = {
+			'all_children': None,
+			'available_sort_by': None,
+			'children': None,
+			'children_count': None,
+			'custom_apply_to_products': 0,
+			'custom_design': None,
+			'custom_design_from': None,
+			'custom_design_to': None,
+			'custom_layout_update': None,
+			'custom_use_parent_settings': 0,
+			'default_sort_by': None,
+			'filter_price_range': None,
+			'image': image_name if image_name else None,
+			'include_in_menu': convert.get('include_in_menu', 1),
+			'is_active': 1 if convert['active'] else 0,
+			'landing_page': None,
+			'level': None,
+			'meta_description': convert['meta_description'],
+			'meta_keywords': convert['meta_keywords'],
+			'meta_title': convert['meta_title'],
+			'name': self.strip_html_tag(convert['name']),
+			'description': convert['description'],
+			'display_mode': convert['display_mode'],
+			'page_layout': None,
+			'path': None,
+			'path_in_store': None,
+			'position': None,
+			'url_key': cate_url_key if cate_url_key else None,
+			'url_path': cate_url_path,
+			'is_anchor': convert['is_anchor'],
+		}
+
+		# for
+		for key1, value1 in category_eav_attribute_data.items():
+
+			# for
+			for key2, value2 in insert_attribute_data.items():
+				if key1 == key2:
+					if key2 != 'include_in_menu' and not value2:
+						continue
+					category_attr_data = {
+						'attribute_id': value1['attribute_id'],
+						'store_id': 0,
+						'row_id': category_id,
+						'value': value2,
+					}
+					all_queries.append(
+						self.create_insert_query_connector('catalog_category_entity_' + value1['backend_type'],
+														   category_attr_data))
+		# endfor
+
+		# endfor
+
+		# if
+		if convert['languages']:
+
+			# for
+			for language_id, language_data in convert['languages'].items():
+				insert_attribute_data = {
+					'meta_description': language_data['meta_description'],
+					'meta_keywords': language_data['meta_keywords'],
+					'meta_title': language_data['meta_title'],
+					'name': self.strip_html_tag(language_data['name']),
+					'description': self.strip_html_tag(language_data['description']),
+					'display_mode': language_data['display_mode'],
+					'url_key': language_data['url_key'],
+					'url_path': language_data['url_path'],
+					'is_anchor': language_data['is_anchor'],
+				}
+
+				# for
+				for key1, value1 in category_eav_attribute_data.items():
+
+					# for
+					for key2, value2 in insert_attribute_data.items():
+						if key1 == key2:
+							store_id = self.get_map_store_view(language_id)
+							if to_int(store_id) == 0:
+								continue
+							if key2 == 'url_key':
+								value2 = self.get_category_url_key(value2, store_id, language_data['name'])
+							if key2 == 'url_path':
+								value2 = self.get_category_url_path(value2, store_id)
+							if not value2:
+								continue
+							category_attr_data = {
+								'attribute_id': value1['attribute_id'],
+								'store_id': store_id,
+								'row_id': category_id,
+								'value': value2,
+							}
+							all_queries.append(
+								self.create_insert_query_connector('catalog_category_entity_' + value1['backend_type'],
+																   category_attr_data))
+				# endfor
+
+			# endfor
+
+		# endfor
+		# endif
+
+		url_rewrite = convert['url_rewrite']
+		if url_rewrite:
+			for rewrite in url_rewrite:
+				path = rewrite['request_path']
+				if not path:
+					continue
+				store_id = self.get_map_store_view(rewrite.get('store_id', 0))
+				path = self.get_request_path(path, store_id, 'category')
+				url_rewrite_data = {
+					'entity_type': 'category',
+					'entity_id': category_id,
+					'request_path': path,
+					'target_path': 'catalog/category/view/id/' + to_str(category_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': None,
+				}
+				self.import_category_data_connector(self.create_insert_query_connector('url_rewrite', url_rewrite_data))
+		else:
+			seo_default = self.get_map_field_by_src(self.TYPE_CATEGORY, convert['id'], convert['code'], 'value')
+			if seo_default:
+				store_target = list(self._notice['map']['languages'].values())
+				store_target = list(map(lambda x: to_int(x), store_target))
+				if 0 not in store_target:
+					store_target.append(0)
+				for store_id in store_target:
+					url_rewrite_data = {
+						'entity_type': 'category',
+						'entity_id': category_id,
+						'request_path': seo_default,
+						'target_path': 'catalog/category/view/id/' + to_str(category_id),
+						'redirect_type': 0,
+						'store_id': store_id,
+						'description': None,
+						'is_autogenerated': 1,
+						'metadata': None,
+					}
+					self.import_category_data_connector(self.create_insert_query_connector('url_rewrite', url_rewrite_data))
+
+		if all_queries:
+			self.import_multiple_data_connector(all_queries, 'category')
+		return response_success()
+
+	def addition_category_import(self, convert, category, categories_ext):
+		return response_success()
+
+	# TODO: PRODUCT
+	def prepare_products_import(self):
+		return self
+
+	def prepare_products_export(self):
+		return self
+
+	def get_products_main_export(self):
+		id_src = self._notice['process']['products']['id_src']
+		limit = self._notice['setting']['products']
+		product_query = "SELECT * FROM _DBPRF_catalog_product_entity WHERE entity_id > " + to_str(id_src)
+		if self._notice['support']['languages_select']:
+			select_store = self._notice['src']['languages_select'].copy()
+			if to_len(select_store) == to_len(self._notice['src']['languages']):
+				pass
+			else:
+				select_website = [self.get_website_id_by_store_id_src(item, 'src') for item in select_store]
+				if select_website:
+					product_query += " AND entity_id IN (SELECT product_id FROM _DBPRF_catalog_product_website WHERE website_id IN " + self.list_to_in_condition(
+						select_website) + ")"
+		product_query += " ORDER BY entity_id ASC LIMIT " + to_str(limit)
+		query = {
+			'type': 'select',
+			'query': product_query
+		}
+		products = self.get_connector_data(self.get_connector_url('query'), {'query': json.dumps(query)})
+		if not products or products['result'] != 'success':
+			return response_error()
+		return products
+
+	def get_products_ext_export(self, products):
+		url_query = self.get_connector_url('query')
+		product_ids = duplicate_field_value_from_list(products['data'], 'row_id')
+		product_id_con = self.list_to_in_condition(product_ids)
+		store_id_con = self.get_con_store_select()
+		if store_id_con:
+			store_id_con = ' AND ' + store_id_con
+		product_ext_queries = {
+			'catalog_product_website': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_website WHERE product_id IN " + product_id_con,
+			},
+			'eav_attribute': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_eav_attribute WHERE entity_type_id = " + self._notice['src']['extends'][
+					'catalog_product']
+			},
+			'catalog_product_super_link': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_super_link WHERE product_id IN " + product_id_con + " OR parent_id IN " + product_id_con,
+			},
+			'catalog_product_link': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_link WHERE product_id IN " + product_id_con + " OR linked_product_id IN " + product_id_con,
+			},
+			'catalog_product_link_grouped_product': {
+				'type': "select",
+				'query': "SELECT tb1.*,tb2.value as position FROM _DBPRF_catalog_product_link AS tb1 LEFT JOIN _DBPRF_catalog_product_link_attribute_int AS tb2 ON tb1.link_id = tb2.link_id WHERE tb1.link_type_id = 3 AND (tb1.linked_product_id IN " + product_id_con + " OR tb1.product_id IN " + product_id_con + ") AND tb2.product_link_attribute_id = " + self.get_catalog_product_link_attribute_id(
+					self.LINK_SUPER, 'position'),
+			},
+			'catalog_product_option': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_option WHERE product_id IN " + product_id_con
+			},
+			'core_url_rewrite': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_url_rewrite WHERE entity_type = 'product' and entity_id IN " + product_id_con + store_id_con
+			},
+			'downloadable_link': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_downloadable_link WHERE product_id IN " + product_id_con
+			},
+			'downloadable_sample': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_downloadable_sample WHERE product_id IN " + product_id_con
+			},
+			'catalog_product_bundle_option': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_bundle_option WHERE parent_id IN " + product_id_con
+			},
+			'catalog_product_entity_media_gallery_value_to_entity': {
+				'type': 'select',
+				'query': 'SELECT * FROM _DBPRF_catalog_product_entity_media_gallery_value_to_entity WHERE row_id IN ' + product_id_con
+			}
+		}
+		product_ext = self.select_multiple_data_connector(product_ext_queries, 'products')
+		if (not product_ext) or product_ext['result'] != 'success':
+			return response_error()
+		download_able_link_ids = duplicate_field_value_from_list(product_ext['data']['downloadable_link'], 'link_id')
+		download_able_link_id_con = self.list_to_in_condition(download_able_link_ids)
+		download_sample_link_ids = duplicate_field_value_from_list(product_ext['data']['downloadable_sample'],
+																   'sample_id')
+		parent_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_super_link'], 'parent_id')
+		allproduct_id_query = self.list_to_in_condition(set(product_ids + parent_ids))
+		option_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_option'], 'option_id')
+		option_id_query = self.list_to_in_condition(option_ids)
+		link_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_link'], 'link_id')
+		bundle_option_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_bundle_option'],
+															"option_id")
+		bundle_option_id_con = self.list_to_in_condition(bundle_option_ids)
+		media_value_ids = duplicate_field_value_from_list(
+			product_ext['data']['catalog_product_entity_media_gallery_value_to_entity'],
+			"value_id")
+		media_value_id_con = self.list_to_in_condition(media_value_ids)
+
+		product_ext_rel_queries = {
+			'catalog_product_link_attribute_decimal': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_link_attribute_decimal WHERE product_link_attribute_id "
+						 "= 3 and link_id IN " + self.list_to_in_condition(
+					link_ids),
+			},
+			'catalog_product_super_attribute': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_super_attribute WHERE product_id IN " +
+						 allproduct_id_query,
+			},
+			'catalog_product_entity': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity WHERE entity_id IN " + allproduct_id_query,
+			},
+			'catalog_product_entity_datetime': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_datetime WHERE row_id IN " +
+						 allproduct_id_query + store_id_con,
+			},
+			'catalog_product_entity_decimal': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_decimal WHERE row_id IN " +
+						 allproduct_id_query + store_id_con,
+			},
+			'catalog_product_entity_gallery': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_gallery WHERE row_id IN " +
+						 allproduct_id_query,
+			},
+			'catalog_product_entity_int': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_int WHERE row_id IN " + allproduct_id_query + store_id_con,
+			},
+			'catalog_product_entity_text': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_text WHERE row_id IN " + allproduct_id_query + store_id_con,
+			},
+			'catalog_product_entity_varchar': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_varchar WHERE row_id IN " +
+						 allproduct_id_query + store_id_con,
+			},
+			'catalog_product_entity_media_gallery': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_media_gallery WHERE value_id IN " +
+						 media_value_id_con,
+			},
+			'catalog_product_entity_tier_price': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_tier_price WHERE row_id IN " +
+						 allproduct_id_query,
+			},
+			# 'catalog_product_entity_group_price': {
+			# 	'type': "select",
+			# 	'query': "SELECT * FROM _DBPRF_catalog_product_entity_group_price WHERE entity_id IN " +
+			# 			 allproduct_id_query,
+			# },
+			'catalog_category_product': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_category_product WHERE product_id IN " + allproduct_id_query,
+			},
+			'cataloginventory_stock_item': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_cataloginventory_stock_item WHERE product_id IN " + allproduct_id_query,
+			},
+			'catalog_product_bundle_parent': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_bundle_selection WHERE product_id IN " +
+						 allproduct_id_query,
+			},
+			'catalog_product_option_title': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_option_title WHERE option_id IN " + option_id_query,
+			},
+			'catalog_product_option_price': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_option_price WHERE option_id IN " + option_id_query,
+			},
+			'catalog_product_option_type_value': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_option_type_value as cpotv WHERE cpotv.option_id IN " +
+						 option_id_query,
+			},
+			'catalog_product_bundle_option_value': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_bundle_option_value WHERE option_id IN " +
+						 bundle_option_id_con,
+			},
+			'catalog_product_bundle_selection': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_bundle_selection WHERE option_id IN " +
+						 bundle_option_id_con,
+			},
+			'downloadable_link_title': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_downloadable_link_title WHERE link_id IN " + download_able_link_id_con
+			},
+			'downloadable_link_price': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_downloadable_link_price WHERE link_id IN " + download_able_link_id_con
+			},
+			'downloadable_sample_title': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_downloadable_sample_title WHERE sample_id IN " +
+						 self.list_to_in_condition(
+							 download_sample_link_ids)
+			}
+		}
+
+		product_ext_rel = self.select_multiple_data_connector(product_ext_rel_queries, 'products')
+		if (not product_ext_rel) or (product_ext_rel['result'] != 'success'):
+			return response_error()
+		product_ext = self.sync_connector_object(product_ext, product_ext_rel)
+		option_type_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_option_type_value'],
+														  'option_type_id')
+		option_type_id_con = self.list_to_in_condition(option_type_ids)
+		value_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_entity_media_gallery'],
+													'value_id')
+		value_id_con = self.list_to_in_condition(value_ids)
+		option_attr_ids = duplicate_field_value_from_list(product_ext['data']['catalog_product_entity_int'], 'value')
+
+		super_attribute_id = duplicate_field_value_from_list(product_ext['data']['catalog_product_super_attribute'],
+															 'product_super_attribute_id')
+		super_attribute_id_query = self.list_to_in_condition(super_attribute_id)
+
+		product_ext_rel_rel_queries = {
+			'catalog_product_super_attribute_label': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_super_attribute_label WHERE store_id = 0 AND product_super_attribute_id IN " + super_attribute_id_query
+			},
+			# 'catalog_product_super_attribute_pricing': {
+			# 	'type': 'select',
+			# 	'query': "SELECT * FROM _DBPRF_catalog_product_super_attribute_pricing WHERE "
+			# 			 "product_super_attribute_id IN " + super_attribute_id_query
+			# },
+			'catalog_product_entity_media_gallery_value': {
+				'type': "select",
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity_media_gallery_value WHERE value_id IN " +
+						 media_value_id_con,
+			},
+			'catalog_product_option_type_title': {
+				'type': 'select',
+				'query': 'SELECT * FROM _DBPRF_catalog_product_option_type_title WHERE option_type_id IN ' +
+						 option_type_id_con,
+			},
+			'catalog_product_option_type_price': {
+				'type': 'select',
+				'query': 'SELECT * FROM _DBPRF_catalog_product_option_type_price WHERE option_type_id IN ' +
+						 option_type_id_con,
+			},
+
+		}
+		product_ext_rel_rel = self.select_multiple_data_connector(product_ext_rel_rel_queries, 'products')
+		if (not product_ext_rel_rel) or (product_ext_rel_rel['result'] != 'success'):
+			return response_error()
+		product_ext = self.sync_connector_object(product_ext, product_ext_rel_rel)
+		return product_ext
+
+	def get_product_parent(self, parent_id):
+		url_query = self.get_connector_url('query')
+		result = response_success()
+		product = self.get_connector_data(url_query, {
+			'query': json.dumps({
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_catalog_product_entity WHERE row_id = " + parent_id
+			})
+		})
+		if (not product) or (product['result'] != 'success'):
+			result['result'] = 'error'
+			return result
+		product_ext = self.get_products_ext_export(product)
+		if (not product_ext) or (product_ext['result'] != 'success'):
+			result['result'] = 'error'
+			return result
+		product = product['data'][0]
+		return self.convert_product_export(product, product_ext)
+
+	def convert_product_export(self, product, products_ext):
+		products_ext_data = products_ext['data']
+		product_data = self.construct_product()
+		product_id = product['row_id']
+		product_data['id'] = product['entity_id']
+		product_data['code'] = product['sku']
+
+		# todo: product website
+		product_website = get_list_from_list_by_field(products_ext_data['catalog_product_website'], 'product_id',
+													  product['row_id'])
+		product_data['product_website'] = duplicate_field_value_from_list(product_website, 'website_id')
+
+		entity_decimal = get_list_from_list_by_field(products_ext_data['catalog_product_entity_decimal'], 'row_id',
+													 product_id)
+		entity_int = get_list_from_list_by_field(products_ext_data['catalog_product_entity_int'], 'row_id',
+												 product_id)
+		entity_text = get_list_from_list_by_field(products_ext_data['catalog_product_entity_text'], 'row_id',
+												  product_id)
+		entity_varchar = get_list_from_list_by_field(products_ext_data['catalog_product_entity_varchar'], 'row_id',
+													 product_id)
+		entity_datetime = get_list_from_list_by_field(products_ext_data['catalog_product_entity_datetime'], 'row_id',
+													  product_id)
+		manage_stock_data = get_list_from_list_by_field(products_ext_data['cataloginventory_stock_item'], 'product_id',
+														product_id)
+		product_link_parent = get_list_from_list_by_field(products_ext_data['catalog_product_link'], 'product_id',
+														  product_id)
+		product_link_children = get_list_from_list_by_field(products_ext_data['catalog_product_link'],
+															'linked_product_id', product_id)
+		product_data['product_link_parent'] = product_link_parent
+		product_data['product_link_children'] = product_link_children
+		eav_attribute = dict()
+		eav_attribute_src = self.select_all_attribute_map()
+		for row in eav_attribute_src:
+			eav_attribute[row['code_src']] = row['id_src']
+
+		quantity = get_row_value_from_list_by_field(products_ext['data']['cataloginventory_stock_item'], 'product_id',
+													product['row_id'], 'qty')
+
+		if manage_stock_data and to_len(manage_stock_data):
+			product_data['manage_stock_data'] = manage_stock_data[0]
+		if quantity:
+			product_data['manage_stock'] = True
+		price = get_list_from_list_by_field(entity_decimal, 'attribute_id', eav_attribute['price'])
+		weight = get_row_value_from_list_by_field(entity_decimal, 'attribute_id', eav_attribute['weight'], 'value')
+		names = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['name'])
+		name_def = get_row_value_from_list_by_field(names, 'store_id', '0', 'value')
+		descriptions = get_list_from_list_by_field(entity_text, 'attribute_id', eav_attribute['description'])
+		description_def = get_row_value_from_list_by_field(descriptions, 'store_id', 0, 'value')
+		short_descriptions = get_list_from_list_by_field(entity_text, 'attribute_id',
+														 eav_attribute['short_description'])
+		short_description_def = get_row_value_from_list_by_field(short_descriptions, 'store_id', 0, 'value')
+		meta_titles = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['meta_title'])
+		meta_title_def = get_row_value_from_list_by_field(meta_titles, 'store_id', 0, 'value')
+		meta_keywords = get_list_from_list_by_field(entity_text, 'attribute_id', eav_attribute['meta_keyword'])
+		meta_keyword_def = get_row_value_from_list_by_field(meta_keywords, 'store_id', 0, 'value')
+		meta_descriptions = get_list_from_list_by_field(entity_varchar, 'attribute_id',
+														eav_attribute['meta_description'])
+		meta_description_def = get_row_value_from_list_by_field(meta_descriptions, 'store_id', 0, 'value')
+		url_key = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['url_key'])
+		url_path = get_list_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute['url_path'])
+		visibility = get_list_from_list_by_field(entity_int, 'attribute_id', eav_attribute['visibility'])
+		visibility_def = get_row_value_from_list_by_field(visibility, 'store_id', 0, 'value')
+		url_key_def = get_row_value_from_list_by_field(url_key, 'store_id', 0, 'value')
+		url_path_def = get_row_value_from_list_by_field(url_path, 'store_id', 0, 'value')
+		price_def = get_row_value_from_list_by_field(price, 'store_id', 0, 'value')
+		status = get_list_from_list_by_field(entity_int, 'attribute_id', eav_attribute['status'])
+		status_def = get_row_value_from_list_by_field(status, 'store_id', 0, 'value')
+		product_data['url_key'] = url_key_def if url_key_def else ''
+		product_data['url_path'] = url_path_def if url_path_def else ''
+		product_data['status'] = True if to_int(status_def) == 1 else False
+		product_data['visibility'] = visibility_def
+		product_data['name'] = name_def if name_def else ''
+		product_data['description'] = description_def if description_def else ''
+		product_data['short_description'] = short_description_def if short_description_def else ''
+		product_data['meta_title'] = meta_title_def if meta_title_def else ''
+		product_data['meta_keyword'] = meta_keyword_def if meta_keyword_def else ''
+		product_data['meta_description'] = meta_description_def if meta_description_def else ''
+		country_of_manufacture = get_list_from_list_by_field(entity_varchar, 'attribute_id',
+															 eav_attribute['country_of_manufacture'])
+		country_of_manufacture_def = get_row_value_from_list_by_field(country_of_manufacture, 'store_id', 0, 'value')
+		product_data['country_of_manufacture'] = country_of_manufacture_def
+
+		product_data['id'] = product['entity_id']
+		product_data['attribute_set_id'] = product['attribute_set_id']
+		product_data['type_id'] = product['type_id']
+		product_data['sku'] = product['sku']
+		product_data['code'] = product['sku']
+		product_data['price'] = price_def if price_def else 0
+		product_data['weight'] = weight if weight else 0
+		product_data['qty'] = to_int(quantity)
+		product_data['created_at'] = product['created_at']
+		product_data['updated_at'] = product['updated_at']
+
+		# Todo: image
+
+		url_product_image = self.get_url_suffix(self._notice['src']['config']['image_product'])
+		product_media = get_list_from_list_by_field(
+			products_ext['data']['catalog_product_entity_media_gallery_value_to_entity'], 'row_id',
+			product['row_id'])
+		
+		product_media_ids = duplicate_field_value_from_list(product_media, 'value_id')
+		product_images = get_list_from_list_by_field(products_ext_data['catalog_product_entity_media_gallery'],
+													 'value_id', product_media_ids)
+		images = list()
+		product_data['images'] = list()
+
+		if product_images:
+			for product_image in product_images:
+				if product_image['value'] in images:
+					continue
+				product_image_data = self.construct_product_image()
+				product_image_data['languages'] = dict()
+				product_image_data['url'] = url_product_image
+				product_image_data['path'] = product_image['value']
+				product_image_data['label'] = get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_entity_media_gallery_value'], 'value_id',
+					product_image['value_id'], 'label')
+				
+				product_image_data['position'] = get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_entity_media_gallery_value'], 'value_id',
+					product_image['value_id'], 'position') if get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_entity_media_gallery_value'], 'value_id',
+					product_image['value_id'], 'position') else 1
+
+				product_image_data['disabled'] = get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_entity_media_gallery_value'], 'value_id',
+					product_image['value_id'], 'disabled') if get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_entity_media_gallery_value'], 'value_id',
+					product_image['value_id'], 'disabled') else 0
+
+				#tony
+				self.log(products_ext_data['catalog_product_entity_media_gallery_value'],"products_ext_data")
+				
+				self.log(product_image['value_id'],"product_image['value_id']")
+
+				images.append(product_image['value'])
+				product_data['images'].append(product_image_data)
+		#tony
+		self.log(product_data['images'],"product_image")
+
+		attribute_image = ['thumbnail', 'small_image', 'image']
+		for attribute_code in attribute_image:
+			image = get_row_value_from_list_by_field(entity_varchar, 'attribute_id', eav_attribute[attribute_code],
+													 'value')
+			if image and image != 'no_selection':
+				if image not in images:
+					product_image_data = self.construct_product_image()
+					product_image_data['url'] = url_product_image
+					product_image_data['path'] = image
+					images.append(image)
+					product_data['images'].append(product_image_data)
+				image_label = get_row_value_from_list_by_field(entity_varchar, 'attribute_id',
+															   eav_attribute[attribute_code + '_label'], 'value')
+				if attribute_code not in product_data:
+					product_data[attribute_code] = dict()
+				product_data[attribute_code]['url'] = url_product_image
+				product_data[attribute_code]['path'] = image
+				product_data[attribute_code]['label'] = image_label
+
+		# todo: special price
+		special_price = get_row_value_from_list_by_field(entity_decimal, 'attribute_id', eav_attribute['special_price'],
+														 'value')
+		special_from_date = get_row_value_from_list_by_field(entity_datetime, 'attribute_id',
+															 eav_attribute['special_from_date'], 'value')
+		special_to_date = get_row_value_from_list_by_field(entity_datetime, 'attribute_id',
+														   eav_attribute['special_to_date'], 'value')
+		if special_price:
+			product_data['special_price']['price'] = special_price
+			product_data['special_price']['start_date'] = special_from_date
+			product_data['special_price']['end_date'] = special_to_date
+		# tiers_price = get_list_from_list_by_field(products_ext_data['catalog_product_entity_tier_price'], 'entity_id',product['row_id'])
+		tires_price_data= self.select_data_connector(self.create_select_query_connector('catalog_product_entity_tier_price', {'row_id': to_int(product['row_id'])}))
+		tiers_price = tires_price_data['data']
+		product_data['tier_prices'] = list()
+		if tiers_price:
+			for tier_price in tiers_price:
+				tier_price_data = dict()
+				tier_price_data['id'] = tier_price['value_id']
+				tier_price_data['qty'] = tier_price['qty']
+				tier_price_data['price'] = tier_price['value']
+				tier_price_data['customer_group_id'] = tier_price['customer_group_id']
+				tier_price_data['all_groups'] = tier_price['all_groups']
+				tier_price_data['website_id'] = tier_price['website_id']
+				product_data['tier_prices'].append(tier_price_data)
+
+		# groups_price = get_list_from_list_by_field(products_ext_data['catalog_product_entity_group_price'], 'entity_id', product['entity_id'])
+		# if groups_price:
+		# 	for tier_price in groups_price:
+		# 		tier_price_data = dict()
+		# 		tier_price_data['id'] = tier_price['value_id']
+		# 		tier_price_data['qty'] = 1
+		# 		tier_price_data['price'] = tier_price['value']
+		# 		tier_price_data['customer_group_id'] = tier_price['customer_group_id']
+		# 		tier_price_data['all_groups'] = tier_price['all_groups']
+		# 		tier_price_data['website_id'] = tier_price['website_id']
+		# 		product_data['tier_prices'].append(tier_price_data)
+
+		# todo: tax + manufacturer
+		product_data['tax']['id'] = get_row_value_from_list_by_field(entity_int, 'attribute_id',
+																	 eav_attribute['tax_class_id'], 'value')
+
+		if 'manufacturer' in eav_attribute:
+			product_data['manufacturer']['id'] = get_row_value_from_list_by_field(entity_int, 'attribute_id',
+																				  eav_attribute['manufacturer'],
+																				  'value')
+		# manu_name = get_row_value_from_list_by_field(products_ext_data['eav_attribute_option_value'], 'option_id',
+		# product_data['manufacturer']['id'], 'value')
+		# product_data['manufacturer']['name'] = manu_name if manu_name else ""
+
+		# todo: category
+		# product_categories = get_list_from_list_by_field(products_ext_data['catalog_category_product'], 'product_id', product['entity_id'])
+		product_categories = self.select_data_connector(self.create_select_query_connector('catalog_category_product', {'product_id': product['entity_id']}))
+														
+		if product_categories['data']:
+			product_categories = product_categories['data']
+			for product_category in product_categories:
+				product_category_data = dict()
+				product_category_data['id'] = product_category['category_id']
+				product_category_data['position'] = product_category['position']
+
+				product_data['categories'].append(product_category_data)
+
+		# todo: multi language
+		language = self._notice['src']['languages_select']
+		for lang_id in language:
+			product_language_data = dict()
+			product_language_data['name'] = get_row_value_from_list_by_field(names, 'store_id', lang_id, 'value')
+			product_language_data['description'] = get_row_value_from_list_by_field(descriptions, 'store_id', lang_id,
+																					'value')
+			product_language_data['short_description'] = get_row_value_from_list_by_field(short_descriptions,
+																						  'store_id', lang_id, 'value')
+			product_language_data['meta_title'] = get_row_value_from_list_by_field(meta_titles, 'store_id', lang_id,
+																				   'value')
+			product_language_data['meta_keyword'] = get_row_value_from_list_by_field(meta_keywords, 'store_id', lang_id,
+																					 'value')
+			product_language_data['meta_description'] = get_row_value_from_list_by_field(meta_descriptions, 'store_id',
+																						 lang_id, 'value')
+			product_language_data['status'] = get_row_value_from_list_by_field(status, 'store_id', lang_id, 'value')
+			product_language_data['url_key'] = get_row_value_from_list_by_field(url_key, 'store_id', lang_id, 'value')
+			product_language_data['url_path'] = get_row_value_from_list_by_field(url_path, 'store_id', lang_id, 'value')
+			product_language_data['price'] = get_row_value_from_list_by_field(price, 'store_id', lang_id, 'value')
+			product_data['languages'][lang_id] = product_language_data
+
+		# todo: custom option product
+		product_options = get_list_from_list_by_field(products_ext_data['catalog_product_option'], 'product_id',
+													  product['entity_id'])
+		product_data['options'] = list()
+		if product_options:
+			for product_option in product_options:
+				option_title = get_list_from_list_by_field(products_ext_data['catalog_product_option_title'],
+														   'option_id', product_option['option_id'])
+				option_price = get_list_from_list_by_field(products_ext_data['catalog_product_option_price'],
+														   'option_id', product_option['option_id'])
+				product_option_type_values = get_list_from_list_by_field(
+					products_ext_data['catalog_product_option_type_value'], 'option_id', product_option['option_id'])
+				option = dict()
+				option_data = self.construct_product_option()
+				option_data['id'] = product_option['option_id']
+				option_data['option_type'] = product_option['type']
+				option_data['option_is_require'] = product_option['is_require']
+				option_data['option_sku'] = product_option['sku']
+				option_data['option_max_characters'] = product_option['max_characters']
+				option_data['option_file_extension'] = product_option['file_extension']
+				option_data['option_image_size_x'] = product_option['image_size_x']
+				option_data['option_image_size_y'] = product_option['image_size_y']
+				option_data['option_sort_order'] = product_option['sort_order']
+
+				if option_title and to_len(option_title) > 0:
+					for option_value_title in option_title:
+						option_value_languages = self.construct_product_option_lang()
+						option_value_languages['option_name'] = option_value_title['title']
+						option_value_price = get_row_from_list_by_field(option_price, 'store_id',
+																		option_value_title['store_id'])
+						if (not option_value_price) and (to_len(option_price) > 0):
+							option_value_price = option_price[0]
+						if option_value_price:
+							option_value_languages['option_price'] = option_value_price['price']
+							option_value_languages['option_price_type'] = option_value_price['price_type']
+						option_data['option_languages'][option_value_title['store_id']] = option_value_languages
+
+				option_type_ids = duplicate_field_value_from_list(product_option_type_values, 'option_type_id')
+				if product_option_type_values and to_len(product_option_type_values) > 0:
+					option_type = list()
+					for type_value in product_option_type_values:
+						option_type_value = self.construct_product_option_value()
+						option_type_value['option_value_code'] = type_value['sku']
+						option_type_value['sort_order'] = type_value.get('sort_order')
+						option_type_value['id'] = type_value['option_type_id']
+
+						option_type_title = get_list_from_list_by_field(
+							products_ext_data['catalog_product_option_type_title'], 'option_type_id',
+							type_value['option_type_id'])
+						option_type_price = get_list_from_list_by_field(
+							products_ext_data['catalog_product_option_type_price'], 'option_type_id',
+							type_value['option_type_id'])
+						if option_type_title and to_len(option_type_title) > 0:
+							for option_type_value_title in option_type_title:
+								option_type_value_languages = self.construct_product_option_lang()
+								option_type_value_languages['option_value_name'] = option_type_value_title['title']
+								option_type_value_price = get_row_from_list_by_field(option_type_price, 'store_id',
+																					 option_type_value_title[
+																						 'store_id'])
+								if (not option_type_value_price) and (to_len(option_type_price) > 0):
+									option_type_value_price = option_type_price[0]
+								if option_type_value_price:
+									option_type_value_languages['option_value_price'] = option_type_value_price['price']
+									option_type_value_languages['option_value_price_type'] = option_type_value_price[
+										'price_type']
+								option_type_value['option_value_languages'][
+									option_type_value_title['store_id']] = option_type_value_languages
+
+						# temp_type['title'] = option_type_title
+						# temp_type['price'] = option_type_price
+						option_type.append(option_type_value)
+					option_data['values'] = option_type
+
+				product_data['options'].append(option_data)
+
+		# todo: get parent product
+		# if (product['type_id'] == 'simple') or (product['type_id'] == 'virtual'):
+		# 	# configurable
+		# 	configurable_parent = get_list_from_list_by_field(products_ext_data['catalog_product_super_link'],
+		# 													  'product_id', product_id)
+		# 	configurable_parent_ids = duplicate_field_value_from_list(configurable_parent, 'parent_id')
+		# 	product_data['parent_configurable'] = list()
+		# 	for configurable_parent_id in configurable_parent_ids:
+		# 		parent = self.get_product_parent(configurable_parent_id)
+		# 		if parent['result'] != 'success':
+		# 			return response_error(
+		# 				'Could not convert: product id ' + to_str(product_id) + ' not get configurable product')
+		# 		product_data['parent_configurable'].append(parent['data'])
+		#
+		# 	# grouped
+		# 	grouped_parent = get_list_from_list_by_field(products_ext_data['catalog_product_link_grouped_product'],
+		# 												 'linked_product_id', product_id)
+		# 	grouped_parent_ids = duplicate_field_value_from_list(grouped_parent, 'product_id')
+		# 	product_data['group_parent_ids'] = list()
+		# 	for grouped_parent_id in grouped_parent_ids:
+		# 		parent = self.get_product_parent(grouped_parent_id)
+		# 		if parent['result'] != 'success':
+		# 			return response_error(
+		# 				'Could not convert: product id ' + to_str(product_id) + ' not get grouped product')
+		# 		product_data['group_parent_ids'].append(parent['data'])
+		#
+		# 	# bundle
+		# 	bundle_parent = get_list_from_list_by_field(products_ext_data['catalog_product_bundle_parent'],
+		# 												"product_id", product_id)
+		# 	bundle_parent_ids = duplicate_field_value_from_list(bundle_parent, 'parent_product_id')
+		# 	product_data['parent_bundle'] = list()
+		# 	for bundle_parent_id in bundle_parent_ids:
+		# 		parent = self.get_product_parent(bundle_parent_id)
+		# 		if parent['result'] != 'success':
+		# 			return response_error(
+		# 				'Could not convert: product id ' + to_str(product_id) + ' not get bundle product')
+		# 		product_data['parent_bundle'].append(parent['data'])
+		# 	product_data['parent_bundle_selection'] = get_list_from_list_by_field(
+		# 		products_ext_data['catalog_product_bundle_parent'], "product_id", product['entity_id'])
+
+		# configurable_parent = get_list_from_list_by_field(products_ext_data['catalog_product_super_link'],
+		# 												  'product_id', product_id)
+		configurable_parent = self.select_data_connector(self.create_select_query_connector('catalog_product_super_link', {'product_id': to_int(product['entity_id'])}))
+		configurable_parent = configurable_parent['data']
+		configurable_parent_ids = duplicate_field_value_from_list(configurable_parent, 'parent_id')
+		configurable_parent_ids_new = list()
+		for i in configurable_parent_ids:
+			configurable_parent_ids_new.append(self.get_entity_id_by_row(i))
+		product_data['configurable_parents'] = configurable_parent_ids_new
+
+		# get price child
+
+		# configurable_childs = get_list_from_list_by_field(products_ext_data['catalog_product_super_link'],'parent_id', product_id)
+		configurable_childs_query = self.create_select_query_connector('catalog_product_super_link', {'parent_id': to_int(product['row_id'])})
+		# self.log(configurable_childs_query, 'configurable_childs_query')
+		configurable_childs = self.select_data_connector(configurable_childs_query)
+		# self.log(configurable_childs, 'configurable_childs')
+		configurable_childs = configurable_childs['data']
+		configurable_childs = duplicate_field_value_from_list(configurable_childs, 'product_id')
+		# configurable_childs_new = list()
+		# for i in configurable_childs:
+		# 	configurable_childs_new.append(self.get_entity_id_by_row(i))
+		product_data['configurable_childs'] = configurable_childs
+		# self.log(configurable_childs, 'configurable_childs_new')
+
+		# grouped
+		grouped_parent = get_list_from_list_by_field(products_ext_data['catalog_product_link_grouped_product'],
+													 'linked_product_id', product_id)
+		# grouped_parent_ids = duplicate_field_value_from_list(grouped_parent, 'product_id')
+		product_data['grouped_parents'] = grouped_parent
+
+		grouped_childs = get_list_from_list_by_field(products_ext_data['catalog_product_link_grouped_product'],
+													 'product_id', product_id)
+		# grouped_parent_ids = duplicate_field_value_from_list(grouped_childs, 'linked_product_id')
+		product_data['grouped_childs'] = grouped_childs
+
+		# bundle
+		bundle_parent = get_list_from_list_by_field(products_ext_data['catalog_product_bundle_parent'],
+													"product_id", product_id)
+		# bundle_parent_ids = duplicate_field_value_from_list(bundle_parent, 'parent_product_id')
+		product_data['bundle_parents'] = bundle_parent
+
+		bundle_childs = get_list_from_list_by_field(products_ext_data['catalog_product_bundle_parent'],
+													"parent_product_id", product_id)
+		# bundle_child_ids = duplicate_field_value_from_list(bundle_childs, 'parent_product_id')
+		product_data['bundle_childs'] = bundle_childs
+		# todo: Get option product bundle
+		if product['type_id'] == "bundle":
+			product_data['price_type'] = get_row_value_from_list_by_field(entity_int, 'attribute_id',
+																		  eav_attribute['price_type'], 'value')
+			product_data['weight_type'] = get_row_value_from_list_by_field(entity_int, 'attribute_id',
+																		   eav_attribute['weight_type'], 'value')
+			product_data['sku_type'] = get_row_value_from_list_by_field(entity_int, 'attribute_id',
+																		eav_attribute['sku_type'], 'value')
+			product_data['bundle_option'] = list()
+			bundle_option = get_list_from_list_by_field(products_ext_data['catalog_product_bundle_option'],
+														"parent_id",
+														product['row_id'])
+			if bundle_option:
+				for value in bundle_option:
+					bundle_option_value = get_list_from_list_by_field(
+						products_ext_data['catalog_product_bundle_option_value'], "option_id", value['option_id'])
+					temp_bundle_option = dict()
+					temp_bundle_option['option'] = value
+					temp_bundle_option['value'] = bundle_option_value
+					product_data['bundle_option'].append(temp_bundle_option)
+				bundle_selection = get_list_from_list_by_field(products_ext_data['catalog_product_bundle_selection'],
+															   "parent_product_id", product['row_id'])
+				product_data['bundle_selection'] = bundle_selection
+
+		# todo: product configurable
+		if product['type_id'] == 'configurable':
+			configurable_data_attributes = list()
+			super_attributes = get_list_from_list_by_field(products_ext_data['catalog_product_super_attribute'],
+														   'product_id', product['row_id'])
+			for super_attribute in super_attributes:
+				attribute_data = dict()
+				attribute_option_data = list()
+				attribute_option_item_data = dict()
+				catalog_product_super_attribute_label = get_row_value_from_list_by_field(
+					products_ext_data['catalog_product_super_attribute_label'], 'product_super_attribute_id',
+					super_attribute['product_super_attribute_id'], 'value')
+				# catalog_product_super_attribute_pricing = get_list_from_list_by_field(
+				# 	products_ext_data['catalog_product_super_attribute_pricing'], 'product_super_attribute_id',
+				# 	super_attribute['product_super_attribute_id'])
+				eav_attribute_configurable = get_row_from_list_by_field(eav_attribute_src, 'id_src',
+																		super_attribute['attribute_id'])
+				attribute_data['attribute_id'] = super_attribute['attribute_id']
+				attribute_data['attribute_code'] = eav_attribute_configurable['code_src']
+				attribute_data['super_attribute_label'] = catalog_product_super_attribute_label
+
+				# for value in catalog_product_super_attribute_pricing:
+				# 	attribute_option_item_data['option_id'] = value['value_index']
+				# 	attribute_option_item_data['is_percent'] = value['is_percent']
+				# 	attribute_option_item_data['pricing_value'] = value['pricing_value']
+				# 	attribute_option_item_data['website_id'] = value['website_id']
+				#
+				# 	attribute_option_data.append(attribute_option_item_data)
+
+				attribute_data['option_data'] = attribute_option_data
+				configurable_data_attributes.append(attribute_data)
+			product_data['attribute_configurable'] = configurable_data_attributes
+
+		# todo: product grouped
+		if product['type_id'] == 'grouped':
+			pass
+
+		# todo: downloadable product
+		if product['type_id'] == 'downloadable':
+			product_data['downloadable'] = dict()
+			downloadable_link = list()
+			links = get_list_from_list_by_field(products_ext_data['downloadable_link'], 'product_id',
+												product['entity_id'])
+			for link in links:
+				title = get_list_from_list_by_field(products_ext_data['downloadable_link_title'], 'link_id',
+													link['link_id'])
+				price = get_list_from_list_by_field(products_ext_data['downloadable_link_price'], 'link_id',
+													link['link_id'])
+				temp_link = dict()
+				temp_link['link'] = link
+				temp_link['title'] = title[0] if to_len(title) > 0 else None
+				temp_link['price'] = price[0] if to_len(price) > 0 else None
+				downloadable_link.append(temp_link)
+			product_data['downloadable']['link'] = downloadable_link
+			product_data['downloadable']['links_title'] = get_row_value_from_list_by_field(entity_varchar,
+																						   'attribute_id',
+																						   eav_attribute['links_title'],
+																						   'value')
+			product_data['downloadable']['links_purchased_separately'] = get_row_value_from_list_by_field(entity_int,
+																										  'attribute_id',
+																										  eav_attribute[
+																											  'links_purchased_separately'],
+																										  'value')
+
+			downloadable_sample = list()
+			sample = get_list_from_list_by_field(products_ext_data['downloadable_sample'], 'product_id',
+												 product['entity_id'])
+			for value in sample:
+				title = get_list_from_list_by_field(products_ext_data['downloadable_sample_title'], 'sample_id',
+													value['sample_id'])
+				temp_sample = dict()
+				temp_sample['sample'] = value
+				temp_sample['title'] = title.get(0, None)
+				downloadable_sample.append(temp_sample)
+			product_data['downloadable']['samples'] = downloadable_sample
+			product_data['downloadable']['samples_title'] = get_row_value_from_list_by_field(entity_varchar,
+																							 'attribute_id',
+																							 eav_attribute[
+																								 'samples_title'],
+																							 'value')
+
+		# todo: Attribute remain
+		list_attribute_migrated = ['name', 'price', 'news_from_date', 'news_to_date', 'weight', 'description',
+								   'short_description',
+								   'meta_title', 'meta_keyword', 'meta_description', 'url_key', 'url_path',
+								   'visibility', 'page_layout', 'options_container',
+								   'status', 'country_of_manufacture', 'thumbnail', 'small_image', 'image',
+								   'thumbnail_label', 'small_image_label', 'image_label', 'special_price',
+								   'special_to_date', 'special_from_date',
+								   'tax_class_id', 'manufacturer', 'links_title', 'links_purchased_separately',
+								   'media_gallery', 'price_type', 'sku_type', 'weight_type', 'samples_title',
+								   'page_layout', 'options_container', 'custom_design']
+
+		attribute_remain = list()
+		for row in eav_attribute_src:
+			attribute_src_data = json.loads(row['value'])
+			attribute_data = dict()
+			if (attribute_src_data['backend_type'] == 'static') or (row['code_src'] in list_attribute_migrated):
+				continue
+			attribute_data['attribute_id'] = row['id_src']
+			attribute_data['attribute_code'] = row['code_src']
+			attribute_data['backend_type'] = attribute_src_data['backend_type']
+			attribute_data['frontend_input'] = attribute_src_data['frontend_input']
+			data = None
+			attribute_entity = ['int', 'varchar', 'datetime', 'text']
+			if attribute_src_data['backend_type'] not in attribute_entity:
+				continue
+			data_name = 'entity_' + attribute_src_data['backend_type']
+			data = get_list_from_list_by_field(locals()[data_name], 'attribute_id', row['id_src'])
+			if data:
+				product_value = dict()
+				for value in data:
+					product_value[to_str(value['store_id'])] = value['value']
+				attribute_data['product_value'] = product_value
+			attribute_remain.append(attribute_data)
+		product_data['add_data'] = attribute_remain
+
+		# todo: url_rewrite
+		url_rewrite = get_list_from_list_by_field(products_ext_data['core_url_rewrite'], 'entity_id',
+												  product['row_id'])
+		product_data['url_rewrite_product_category'] = list()
+		product_data['url_rewrite_product'] = list()
+		for rewrite in url_rewrite:
+			rewrite_data = dict()
+			rewrite_data['category_id'] = None
+			cate = re.findall('catalog/product/view/id/' + to_str(product['entity_id']) + '/category/(.*)',
+							  rewrite['target_path'])
+			if cate and to_len(cate) > 0:
+				rewrite_data['category_id'] = cate[0]
+			rewrite_data['store_id'] = rewrite['store_id']
+			# rewrite_data['category_id'] = rewrite['category_id']
+			rewrite_data['request_path'] = rewrite['request_path']
+			rewrite_data['description'] = rewrite['description']
+			if not rewrite_data['category_id']:
+				product_data['url_rewrite_product'].append(rewrite_data)
+			else:
+				product_data['url_rewrite_product_category'].append(rewrite_data)
+		return response_success(product_data)
+
+	def get_entity_id_by_row(self, row_id):
+		data = self.select_data_connector(self.create_select_query_connector('catalog_product_entity', {'row_id': to_int(row_id)}))
+		
+		return data['data'][0]['entity_id']
+
+	def get_product_id_import(self, convert, product, products_ext):
+		return product['entity_id']
+
+	def update_product_after_demo(self, product_id, convert, order, orders_ext):
+		all_query = list()
+		all_query.append(self.create_delete_query_connector('catalog_category_product', {'product_id': product_id}))
+		category_desc = list()
+		for value in convert['categories']:
+			category_ids = list()
+			try:
+				category_ids = self._notice['map']['category_data'][value['id']]
+			except KeyError:
+				category_list = self.select_category_map(value['id'])
+				if category_list:
+					for category_map in category_list:
+						category_ids.append(category_map['id_desc'])
+			if not category_ids:
+				continue
+			for category_id in category_ids:
+				if category_id in category_desc:
+					continue
+				category_desc.append(category_id)
+				catalog_category_product_data = {
+					'category_id': category_id,
+					'product_id': product_id,
+					'position': get_value_by_key_in_dict(value, 'position', 1),
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_category_product', catalog_category_product_data))
+		tax_class_id_src = convert.get('tax', {}).get('id', None)
+		tax_class_id = 0
+		if tax_class_id_src:
+			tax_class_id = self.get_map_field_by_src(self.TYPE_TAX_PRODUCT, tax_class_id_src)
+		product_eav_attribute = self.select_all_attribute_map()
+		product_eav_attribute_data = dict()
+		for attribute_data in product_eav_attribute:
+			attribute = json.loads(attribute_data['value'])
+			if attribute['backend_type'] != 'static':
+				if not attribute_data['code_src'] in product_eav_attribute_data:
+					product_eav_attribute_data[attribute_data['code_src']] = dict()
+				product_eav_attribute_data[attribute_data['code_src']]['attribute_id'] = attribute['attribute_id']
+				product_eav_attribute_data[attribute_data['code_src']]['backend_type'] = attribute['backend_type']
+				product_eav_attribute_data[attribute_data['code_src']]['frontend_input'] = attribute['frontend_input']
+		data_attribute_insert = {
+			'tax_class_id': tax_class_id if tax_class_id else 0,
+			# 'url_path': pro_url_path,
+		}
+		manufacturer_src_id = convert.get('manufacturer', {}).get('id')
+		if manufacturer_src_id:
+			manufacturer_id = self.get_map_field_by_src(self.TYPE_MANUFACTURER, manufacturer_src_id)
+			if manufacturer_id and 'manufacturer' in product_eav_attribute_data:
+				data_attribute_insert['manufacturer'] = manufacturer_id
+		for key, value in data_attribute_insert.items():
+			if key not in product_eav_attribute_data:
+				continue
+			if not value:
+				continue
+			all_query.append(self.create_delete_query_connector('catalog_product_entity_' + product_eav_attribute_data[key]['backend_type'], {'entity_id': product_id, 'attribute_id':product_eav_attribute_data[key]['attribute_id']}))
+			product_attr_data = {
+				'attribute_id': product_eav_attribute_data[key]['attribute_id'],
+				'store_id': 0,
+				'row_id': product_id,
+				'value': value,
+			}
+			all_query.append(self.create_insert_query_connector('catalog_product_entity_' + product_eav_attribute_data[key]['backend_type'],product_attr_data))
+		self.import_multiple_data_connector(all_query, 'update_demo_product')
+		return response_success()
+	def router_product_import(self, convert, product, products_ext):
+		return response_success('product_import')
+
+	def before_product_import(self, convert, product, products_ext):
+		return response_success()
+
+	def import_parent_product(self, parent):
+		parent_id = self.get_map_field_by_src(self.TYPE_PRODUCT, parent['id'], parent['code'])
+		if parent_id:
+			return response_success(parent_id)
+		parent_import = self.product_import(parent, None, None)
+		if parent_import['result'] != 'success':
+			return parent_import
+		parent_id = parent_import['data']
+		self.after_product_import(parent_id, parent, None, None)
+		return parent_import
+
+	def product_import(self, convert, product, products_ext):
+		response = response_success()
+		try:
+			attribute_set_id = self._notice['map']['attributes'][convert['attribute_set_id']]
+		except Exception:
+			attribute_set_id = 4
+		sequence_value = self.import_product_data_connector(
+			self.create_insert_query_connector('sequence_product', {'sequence_value': convert['id'] if self._notice['config']['pre_prd'] else None}), True, convert['id'])
+		if not sequence_value:
+			return response_error()
+		catalog_product_entity_data = {
+			'row_id': sequence_value,
+			'entity_id': sequence_value,
+			'created_in': 1,
+			'updated_in': '2147483647',
+			'attribute_set_id': attribute_set_id,
+			'type_id': convert['type_id'] if convert['type_id'] else 'simple',
+			'sku': convert['sku'],
+			'has_options': 0,
+			'required_options': 0,
+			'created_at': convert.get('created_at', get_current_time()),
+			'updated_at': convert.get('updated_at', get_current_time()),
+		}
+		if to_len(convert['options']) > 0:
+			catalog_product_entity_data['has_options'] = 1
+		# if self._notice['config']['pre_prd']:
+		# 	catalog_product_entity_data['entity_id'] = convert['id']
+		product_id = self.import_product_data_connector(
+			self.create_insert_query_connector('catalog_product_entity', catalog_product_entity_data), True,
+			convert['id'])
+		if not product_id:
+			response['result'] = 'error'
+			response['msg'] = self.warning_import_entity('product', convert['id'])
+			return response
+		self.insert_map(self.TYPE_PRODUCT, convert['id'], product_id, convert['code'])
+		return response_success(product_id)
+
+	def after_product_import(self, product_id, convert, product, products_ext):
+		url_query = self.get_connector_url('query')
+		url_image = self.get_connector_url('image')
+		all_query = list()
+		product_eav_attribute = self.select_all_attribute_map()
+		product_eav_attribute_data = dict()
+		attribute_id_media = None
+		for attribute_data in product_eav_attribute:
+			attribute = json.loads(attribute_data['value'])
+			if attribute['backend_type'] != 'static':
+				if not attribute_data['code_src'] in product_eav_attribute_data:
+					product_eav_attribute_data[attribute_data['code_src']] = dict()
+				product_eav_attribute_data[attribute_data['code_src']]['attribute_id'] = attribute['attribute_id']
+				product_eav_attribute_data[attribute_data['code_src']]['backend_type'] = attribute['backend_type']
+			if attribute['attribute_code'] == 'media_gallery':
+				attribute_id_media = attribute['attribute_id']
+		# ------------------------------------------------------------------------------------------------------------------------
+		# todo: image
+		# image begin
+		image_name = None
+		thumbnail_name = None
+		small_image_name = None
+		if 'images' in convert:
+			for item in convert['images']:
+				if item['url'] and item['path']:
+					item_image_name = None
+					if (not ('ignore_image' in self._notice['config'])) or (not self._notice['config']['ignore_image']):
+						image_process = self.process_image_before_import(item['url'], item['path'])
+						item_image_name = self.uploadImageConnector(image_process, self.add_prefix_path(self.make_magento_image_path(image_process['path']) + os.path.basename(image_process['path']), self._notice['target']['config']['image_product']))
+						if item_image_name:
+							item_image_name = self.remove_prefix_path(item_image_name, self._notice['target']['config']['image_product'])
+					else:
+						item_image_name = item['path']
+					if item_image_name:
+						try:
+							if convert['thumb_image']['path'] == item['path']:
+								image_name = item_image_name
+							if convert['thumbnail']['path'] == item['path']:
+								thumbnail_name = item_image_name
+							if convert['small_image']['path'] == item['path']:
+								small_image_name = item_image_name
+						except NameError as e:
+							pass
+						catalog_product_entity_media_gallery_data = {
+							'attribute_id': attribute_id_media,
+							'value': item_image_name,
+							'media_type': 'image',
+							'disabled': 0,
+						}
+						value_id = self.import_product_data_connector(self.create_insert_query_connector('catalog_product_entity_media_gallery', catalog_product_entity_media_gallery_data))
+						if value_id:
+							catalog_product_entity_media_gallery_value_to_entity_data = {
+								'value_id': value_id,
+								'row_id': product_id,
+							}
+							catalog_product_entity_media_gallery_value_to_entity_query = self.create_insert_query_connector('catalog_product_entity_media_gallery_value_to_entity', catalog_product_entity_media_gallery_value_to_entity_data)
+							all_query.append(catalog_product_entity_media_gallery_value_to_entity_query)
+							catalog_product_entity_media_gallery_value_data = {
+								'value_id': value_id,
+								'store_id': 0,
+								'row_id': product_id,
+								'label': item.get('label', ''),
+								'position': item.get('position', 1),
+								'disabled': 0,
+							}
+							all_query.append(self.create_insert_query_connector('catalog_product_entity_media_gallery_value', catalog_product_entity_media_gallery_value_data))
+		# image end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: link category and product
+		# begin
+		category_desc = list()
+		for value in convert['categories']:
+			category_ids = list()
+			try:
+				category_ids = self._notice['map']['category_data'][value['id']]
+			except KeyError:
+				category_list = self.select_category_map(value['id'])
+				if category_list:
+					for category_map in category_list:
+						category_ids.append(category_map['id_desc'])
+			if not category_ids:
+				continue
+			for category_id in category_ids:
+				if category_id in category_desc:
+					continue
+				category_desc.append(category_id)
+				catalog_category_product_data = {
+					'category_id': category_id,
+					'product_id': product_id,
+					'position': 1,
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_category_product', catalog_category_product_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: cataloginventory_stock
+		# begin
+		if self.convert_version(self._notice['target']['config']['version'], 2) >= 230 and 'view' in self._notice['target']['config'] and not self._notice['target']['config']['view']:
+			inventory_stock_1_data = {
+				'product_id': product_id,
+				'website_id': 0,
+				'stock_id': 1,
+				'qty': convert['qty'],
+				'is_salable': 1,
+				'sku': convert['sku'],
+			}
+			all_query.append(
+				self.create_insert_query_connector('inventory_stock_1', inventory_stock_1_data))
+		cataloginventory_stock_status_data = {
+			'product_id': product_id,
+			'website_id': 0,
+			'stock_id': 1,
+			'qty': convert['qty'],
+			'stock_status': 1,
+		}
+		all_query.append(
+			self.create_insert_query_connector('cataloginventory_stock_status', cataloginventory_stock_status_data))
+
+		manage_stock_data = convert.get('manage_stock_data')
+		if manage_stock_data:
+			low_stock_date = manage_stock_data.get('low_stock_date')
+			if low_stock_date and low_stock_date == '0000-00-00 00:00:00':
+				low_stock_date = None
+
+			cataloginventory_stock_item_data = {
+				'product_id': product_id, 'stock_id': 1, 'qty': convert.get('qty'),
+				'min_qty': manage_stock_data.get('min_qty', '0.0000'),
+				'use_config_min_qty': manage_stock_data.get('use_config_min_qty', 1),
+				'is_qty_decimal': manage_stock_data.get('is_qty_decimal', 0),
+				'backorders': manage_stock_data.get('backorders', 0),
+				'use_config_backorders': manage_stock_data.get('use_config_backorders', 1),
+				'min_sale_qty': manage_stock_data.get('min_sale_qty', '1.0000'),
+				'use_config_min_sale_qty': manage_stock_data.get('use_config_min_sale_qty', 1),
+				'max_sale_qty': manage_stock_data.get('max_sale_qty', '0.0000'),
+				'use_config_max_sale_qty': manage_stock_data.get('use_config_max_sale_qty', 1),
+				'is_in_stock': manage_stock_data.get('is_in_stock', 0),
+				'low_stock_date': low_stock_date,
+				'notify_stock_qty': manage_stock_data.get('notify_stock_qty'),
+				'use_config_notify_stock_qty': manage_stock_data.get('use_config_notify_stock_qty', 1),
+				'manage_stock': manage_stock_data.get('manage_stock', 0),
+				'use_config_manage_stock': manage_stock_data.get('use_config_manage_stock', 1),
+				'stock_status_changed_auto': manage_stock_data.get('stock_status_changed_auto', 0),
+				'use_config_qty_increments': manage_stock_data.get('use_config_qty_increments', 0),
+				'qty_increments': manage_stock_data.get('qty_increments', '0.0000'),
+				'use_config_enable_qty_inc': manage_stock_data.get('use_config_enable_qty_inc', 1),
+				'enable_qty_increments': manage_stock_data.get('enable_qty_increments', 0),
+				'is_decimal_divided': manage_stock_data.get('is_decimal_divided', 0),
+				'website_id': 0
+			}
+			all_query.append(
+				self.create_insert_query_connector('cataloginventory_stock_item', cataloginventory_stock_item_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: tier price
+		# begin
+		if 'tier_prices' in convert:
+			for value in convert['tier_prices']:
+				tier_price_website_id = [0]
+				if value['website_id']:
+					tier_price_website_id = self.get_website_ids_target_by_id_src([value['website_id']])
+					if not tier_price_website_id:
+						tier_price_website_id = [0]
+				for website_id in tier_price_website_id:
+					catalog_product_entity_tier_price_data = {
+						'row_id': product_id,
+						'all_groups': value.get('all_groups', 1),
+						'customer_group_id': self._notice['map']['customer_group'].get(
+							value.get('customer_group_id', -1), 0),
+						'qty': value['qty'],
+						'value': value['price'],
+						'website_id': website_id,
+					}
+					if self.convert_version(self._notice['target']['config']['version'], 2) >= 220:
+						catalog_product_entity_tier_price_data['percentage_value'] = None
+					all_query.append(self.create_insert_query_connector('catalog_product_entity_tier_price',
+																		catalog_product_entity_tier_price_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: product website
+		# begin
+		product_website_ids = list()
+		if 'product_website' in convert:
+			product_website_ids = self.get_website_ids_target_by_id_src(convert['product_website'])
+		for website_id in product_website_ids:
+			catalog_product_website_data = {
+				'product_id': product_id,
+				'website_id': website_id,
+			}
+			all_query.append(
+				self.create_insert_query_connector('catalog_product_website', catalog_product_website_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: custom option  product
+		# begin
+		if 'options' in convert:
+			for item in convert['options']:
+				# option_value = item.get('value')
+				catalog_product_option_data = {
+					'product_id': product_id,
+					'type': item.get('option_type'),
+					'is_require': item.get('option_is_require', 1),
+					'sku': item.get('option_sku'),
+					'max_characters': item.get('option_max_characters'),
+					'file_extension': item.get('option_max_characters'),
+					'image_size_x': item.get('option_image_size_x'),
+					'image_size_y': item.get('option_image_size_y'),
+					'sort_order': 0,
+				}
+				catalog_product_option_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_option', catalog_product_option_data))
+				if not catalog_product_option_id:
+					continue
+				option_languages = item.get('option_languages')
+				if option_languages:
+					for option_language_id, option_language_data in option_languages.items():
+						catalog_product_option_title_data = {
+							'option_id': catalog_product_option_id,
+							'store_id': self.get_map_store_view(option_language_id),
+							'title': option_language_data.get('option_name'),
+						}
+						all_query.append(self.create_insert_query_connector('catalog_product_option_title',
+																			catalog_product_option_title_data))
+
+						if to_len(item['values']) == 0:
+							catalog_product_option_price_data = {
+								'option_id': catalog_product_option_id,
+								'store_id': self.get_map_store_view(option_language_id),
+								'price': option_language_data.get('option_name_price', '0.0000'),
+								'price_type': option_language_data.get('price_type', 'fixed'),
+							}
+							all_query.append(self.create_insert_query_connector('catalog_product_option_price',
+																				catalog_product_option_price_data))
+
+				if item['values']:
+					for option_type in item['values']:
+						catalog_product_option_type_value_data = {
+							'option_id': catalog_product_option_id,
+							'sku': option_type.get('option_value_code'),
+							'sort_order': option_type.get('sort_order', 0),
+						}
+						catalog_product_option_type_value_id = self.import_product_data_connector(
+							self.create_insert_query_connector('catalog_product_option_type_value',
+															   catalog_product_option_type_value_data))
+						if not catalog_product_option_type_value_id:
+							continue
+						option_value_languages = option_type.get('option_value_languages')
+						if option_value_languages:
+							for option_value_language_id, option_value_language_data in option_value_languages.items():
+								catalog_product_option_type_title_data = {
+									'option_type_id': catalog_product_option_type_value_id,
+									'store_id': self.get_map_store_view(option_value_language_id),
+									'title': option_value_language_data.get('option_value_name'),
+								}
+								all_query.append(self.create_insert_query_connector('catalog_product_option_type_title',
+																					catalog_product_option_type_title_data))
+
+								catalog_product_option_type_price_data = {
+									'option_type_id': catalog_product_option_type_value_id,
+									'store_id': self.get_map_store_view(option_value_language_id),
+									'price': option_value_language_data.get('option_value_price', '0.0000'),
+									'price_type': option_value_language_data.get('option_value_price_type', 'fixed'),
+								}
+								all_query.append(self.create_insert_query_connector('catalog_product_option_type_price',
+																					catalog_product_option_type_price_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: product attribute
+		# begin
+		tax_class_id_src = convert.get('tax', {}).get('id', None)
+		tax_class_id = 0
+		if tax_class_id_src:
+			tax_class_id = self.get_map_field_by_src(self.TYPE_TAX_PRODUCT, tax_class_id_src)
+		pro_url_key = self.get_product_url_key(convert.get('url_key'), 0, convert.get('name', ''))
+		pro_url_path = self.get_product_url_path(convert.get('url_path'), 0, pro_url_key)
+
+		data_attribute_insert = {
+			'name': self.strip_html_tag(convert.get('name')),
+			'meta_title': convert.get('meta_title'),
+			'meta_description': convert.get('meta_description'),
+			'news_from_date': convert.get('news_from_date'),
+			'news_to_date': convert.get('news_to_date'),
+			'image': image_name if image_name else (thumbnail_name if thumbnail_name else None),
+			'small_image': image_name if image_name else (thumbnail_name if thumbnail_name else None),
+			'thumbnail': image_name if image_name else (thumbnail_name if thumbnail_name else None),
+			'description': self.change_img_src_in_text(convert.get('description')),
+			'short_description': self.change_img_src_in_text(convert.get('short_description')),
+			'meta_keyword': convert.get('meta_keyword'),
+			'special_price': convert.get('special_price', {}).get('price'),
+			'special_from_date': convert.get('special_price', {}).get('start_date'),
+			'special_to_date': convert.get('special_price', {}).get('end_date'),
+			'ts_dimensions_length': convert.get('length'),
+			'ts_dimensions_width': convert.get('width'),
+			'ts_dimensions_height': convert.get('height'),
+			'price': convert.get('price'),
+			'weight': convert.get('weight'),
+			'visibility': convert.get('visibility', 4),
+			'quantity_and_stock_status': 1 if convert.get('quantity_and_stock_status') else 0,
+			'tax_class_id': tax_class_id if tax_class_id else 0,
+			'status': 1 if convert['status'] else 2,
+			'url_key': pro_url_key,
+			'country_of_manufacture': convert.get('country_of_manufacture_def')
+
+			# 'url_path': pro_url_path,
+		}
+		if thumbnail_name:
+			data_attribute_insert['thumbnail_label'] = convert.get('thumbnail', {}).get('label', None)
+		if image_name:
+			data_attribute_insert['small_image_label'] = convert.get('small_image', {}).get('label', None)
+		if 'downloadable' in convert and convert['downloadable']:
+			data_attribute_insert['links_title'] = convert.get('downloadable', {}).get('links_title')
+			data_attribute_insert['links_purchased_separately'] = convert.get('downloadable', {}).get('links_purchased_separately')
+			data_attribute_insert['samples_title'] = convert.get('downloadable', {}).get('samples_title')
+		if convert['type_id'] == 'bundle':
+			data_attribute_insert['price_type'] = convert.get('price_type')
+			data_attribute_insert['weight_type'] = convert.get('weight_type')
+			data_attribute_insert['sku_type'] = convert.get('sku_type')
+		manufacturer_src_id = convert.get('manufacturer', {}).get('id')
+		if manufacturer_src_id:
+			manufacturer_id = self.get_map_field_by_src(self.TYPE_MANUFACTURER, manufacturer_src_id)
+			if manufacturer_id and 'manufacturer' in product_eav_attribute_data:
+				data_attribute_insert['manufacturer'] = manufacturer_id
+
+		special_attribute = ['price_type', 'weight_type', 'sku_type']
+		for key, value in data_attribute_insert.items():
+			if key not in product_eav_attribute_data:
+				continue
+			if key in special_attribute:
+				value = value if value else 0
+			elif not value:
+				continue
+			product_attr_data = {
+				'attribute_id': product_eav_attribute_data[key]['attribute_id'],
+				'store_id': 0,
+				'row_id': product_id,
+				'value': value,
+			}
+			all_query.append(self.create_insert_query_connector(
+				'catalog_product_entity_' + product_eav_attribute_data[key]['backend_type'],
+				product_attr_data))
+
+		# begin: product attribute multi language
+		if 'languages' in convert:
+			for language_id, language_data in convert['languages'].items():
+				data_attribute_insert = {
+					'name': self.strip_html_tag(language_data.get('name')),
+					'meta_title': language_data.get('meta_title'),
+					'meta_description': language_data.get('meta_description'),
+					'description': self.strip_html_tag(language_data.get('description')),
+					'short_description': self.strip_html_tag(language_data.get('short_description')),
+					'status': language_data.get('status'),
+					'url_key': language_data.get('url_key'),
+					'meta_keyword': language_data.get('meta_keyword'),
+					# 'url_path': language_data.get('url_path'),
+				}
+				for key, value in data_attribute_insert.items():
+					if key not in product_eav_attribute_data:
+						continue
+					store_id = self.get_map_store_view(language_id)
+					if key == 'url_key':
+						value = self.get_product_url_key(value, store_id, language_data.get('name'))
+					if not value:
+						continue
+					product_attr_data = {
+						'attribute_id': product_eav_attribute_data[key]['attribute_id'],
+						'store_id': store_id,
+						'row_id': product_id,
+						'value': value,
+					}
+					all_query.append(
+						self.create_insert_query_connector(
+							'catalog_product_entity_' + product_eav_attribute_data[key]['backend_type'],
+							product_attr_data))
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: parent configurable product
+		# begin
+		if convert.get('parent_configurable', list()):
+			for parent_configurable in convert['parent_configurable']:
+				configurable_product_parent_import = self.import_parent_product(parent_configurable)
+				if configurable_product_parent_import['result'] != 'success':
+					# log err
+					continue
+				configurable_product_parent_id = configurable_product_parent_import['data']
+				if not configurable_product_parent_id:
+					continue
+				catalog_product_relation_data = {
+					'parent_id': configurable_product_parent_id,
+					'child_id': product_id
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+
+				catalog_product_super_link_data = {
+					'product_id': product_id,
+					'parent_id': configurable_product_parent_id
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_super_link', catalog_product_super_link_data))
+
+		if convert.get('configurable_parents'):
+			for configurable_parent_id in convert['configurable_parents']:
+				parent_id_desc = self.get_map_field_by_src(self.TYPE_PRODUCT, configurable_parent_id)
+				if not parent_id_desc:
+					continue
+				catalog_product_relation_data = {
+					'parent_id': parent_id_desc,
+					'child_id': product_id
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+
+				catalog_product_super_link_data = {
+					'product_id': product_id,
+					'parent_id': parent_id_desc
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_super_link', catalog_product_super_link_data))
+
+		if convert.get('configurable_childs'):
+			for configurable_child_id in convert['configurable_childs']:
+				child_id_desc = self.get_map_field_by_src(self.TYPE_PRODUCT, configurable_child_id)
+				if not child_id_desc:
+					continue
+				catalog_product_relation_data = {
+					'parent_id': product_id,
+					'child_id': child_id_desc
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+
+				catalog_product_super_link_data = {
+					'product_id': child_id_desc,
+					'parent_id': product_id
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_super_link', catalog_product_super_link_data))
+				
+		# begin: attribute configurable product
+		if 'attribute_configurable' in convert:
+			for attribute_configurable in convert['attribute_configurable']:
+				attribute_id = product_eav_attribute_data.get(attribute_configurable['attribute_code'], dict()).get(
+					'attribute_id')
+				if not attribute_id:
+					continue
+				catalog_product_super_attribute_data = {
+					'product_id': product_id,
+					'attribute_id': attribute_id,
+					'position': 0,
+				}
+				product_super_attribute_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_super_attribute',
+													   catalog_product_super_attribute_data))
+				if not product_super_attribute_id:
+					continue
+				catalog_product_super_attribute_label = attribute_configurable.get('super_attribute_label', None)
+				if catalog_product_super_attribute_label:
+					catalog_product_super_attribute_label_data = {
+						'product_super_attribute_id': product_super_attribute_id,
+						'store_id': 0,
+						'use_default': 1,
+						'value': catalog_product_super_attribute_label
+					}
+					all_query.append(self.create_insert_query_connector('catalog_product_super_attribute_label',
+																		catalog_product_super_attribute_label_data))
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: downloadable product
+		# begin
+		downloadable = convert.get('downloadable', dict())
+		if 'link' in downloadable:
+			for downloadable_link in downloadable['link']:
+				link = downloadable_link['link']
+				title = downloadable_link['title']
+				price = downloadable_link['price']
+
+				downloadable_link_data = {
+					'product_id': product_id,
+					'sort_order': 0,
+					'number_of_downloads': link.get('number_of_download', 0),
+					'is_shareable': link.get('is_shareable'),
+					'link_url': link.get('link_url'),
+					'link_file': link.get('link_file'),
+					'link_type': link.get('link_type'),
+					'sample_url': link.get('sample_url'),
+					'sample_file': link.get('sample_file'),
+					'sample_type': link.get('sample_type'),
+				}
+				downloadable_link_id = self.import_product_data_connector(
+					self.create_insert_query_connector('downloadable_link', downloadable_link_data))
+				if not downloadable_link_id:
+					continue
+				downloadable_link_title_data = {
+					'link_id': downloadable_link_id,
+					'store_id': 0,
+					'title': title.get('title')
+				}
+				all_query.append(
+					self.create_insert_query_connector('downloadable_link_title', downloadable_link_title_data))
+
+				downloadable_link_price_data = {
+					'link_id': downloadable_link_id,
+					'website_id': 0,
+					'price': price.get('price')
+				}
+				all_query.append(
+					self.create_insert_query_connector('downloadable_link_price', downloadable_link_price_data))
+
+		if 'samples' in downloadable:
+			for downloadable_sample in downloadable['samples']:
+				sample = downloadable_sample['sample']
+				title = downloadable_sample.get('title', {})
+
+				downloadable_sample_data = {
+					'product_id': product_id,
+					'sample_url': sample.get('sample_url'),
+					'sample_file': sample.get('sample_file'),
+					'sample_type': sample.get('sample_type'),
+					'sort_order': sample.get('sort_order', 0),
+				}
+				downloadable_sample_id = self.import_product_data_connector(
+					self.create_insert_query_connector('downloadable_sample', downloadable_sample_data))
+				if not downloadable_sample_id:
+					continue
+				downloadable_sample_title_data = {
+					'sample_id': downloadable_sample_id,
+					'store_id': 0,
+					'title': title.get('title')
+				}
+				all_query.append(
+					self.create_insert_query_connector('downloadable_sample_title', downloadable_sample_title_data))
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+		# todo: parent grouped product
+		# begin
+		# if 'group_parent_ids' in convert:
+		# 	for group_parent_ids in convert['group_parent_ids']:
+		# 		grouped_product_parent_import = self.import_parent_product(group_parent_ids)
+		# 		if grouped_product_parent_import['result'] != 'success':
+		# 			# log err
+		# 			continue
+		# 		grouped_product_parent_id = grouped_product_parent_import['data']
+		# 		if not grouped_product_parent_id:
+		# 			continue
+		# 		catalog_product_relation_data = {
+		# 			'parent_id': grouped_product_parent_id,
+		# 			'child_id': product_id,
+		# 		}
+		# 		all_query.append(
+		# 			self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+		#
+		# 		catalog_product_link_data = {
+		# 			'product_id': grouped_product_parent_id,
+		# 			'linked_product_id': product_id,
+		# 			'link_type_id': 3
+		# 		}
+		# 		all_query.append(self.create_insert_query_connector('catalog_product_link', catalog_product_link_data))
+		if convert.get('grouped_parents'):
+			for grouped_parent in convert['grouped_parents']:
+				grouped_parent_id = grouped_parent['product_id']
+				parent_id_desc = self.get_map_field_by_src(self.TYPE_PRODUCT, grouped_parent_id)
+				if not parent_id_desc:
+					continue
+				catalog_product_link_data = {
+					'product_id': parent_id_desc,
+					'linked_product_id': product_id,
+					'link_type_id': 3
+				}
+				catalog_product_link_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_link', catalog_product_link_data))
+				if not catalog_product_link_id:
+					continue
+				position_group = grouped_parent.get('position')
+				if not position_group:
+					position_group = self.get_map_field_by_src(self.TYPE_MAX_GROUP, grouped_parent_id)
+					if not position_group:
+						position_group = 0
+					position_group += 1
+				product_link_attribute_int = {
+					'product_link_attribute_id': self.get_catalog_product_link_attribute_id(self.LINK_SUPER, 'position'),
+					'link_id': catalog_product_link_id,
+					'value': position_group
+				}
+				self.update_map(self.TYPE_MAX_GROUP, grouped_parent_id, None, position_group)
+				all_query.append(self.create_insert_query_connector('catalog_product_link_attribute_int', product_link_attribute_int))
+				catalog_product_relation_data = {
+					'parent_id': parent_id_desc,
+					'child_id': product_id,
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+
+		if convert.get('grouped_childs'):
+			position_group = 1
+			for grouped_child in convert['grouped_childs']:
+				grouped_child_id = grouped_child['linked_product_id']
+				child_id_desc = self.get_map_field_by_src(self.TYPE_PRODUCT, grouped_child_id)
+				if not child_id_desc:
+					continue
+				catalog_product_link_data = {
+					'product_id': product_id,
+					'linked_product_id': child_id_desc,
+					'link_type_id': 3
+				}
+				catalog_product_link_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_link', catalog_product_link_data))
+				if not catalog_product_link_id:
+					continue
+				position_group = grouped_child.get('position')
+				if not position_group:
+					position_group = self.get_map_field_by_src(self.TYPE_MAX_GROUP, convert['id'])
+					if not position_group:
+						position_group = 0
+					position_group += 1
+				catalog_product_link_attribute_int = {
+					'product_link_attribute_id': self.get_catalog_product_link_attribute_id(self.LINK_SUPER, 'position'),
+					"link_id": catalog_product_link_id,
+					"value": to_int(position_group),
+				}
+				all_query.append(self.create_insert_query_connector('catalog_product_link_attribute_int',
+																	catalog_product_link_attribute_int))
+				catalog_product_relation_data = {
+					'parent_id': product_id,
+					'child_id': child_id_desc,
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+			self.insert_map(self.TYPE_MAX_GROUP, convert['id'], position_group, convert['code'])
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+		# todo:parent bundle product
+		# begin
+
+		if 'parent_bundle' in convert:
+			for parent_bundle in convert['parent_bundle']:
+				bundle_product_parent_import = self.import_parent_product(parent_bundle)
+				if bundle_product_parent_import['result'] != 'success':
+					continue
+				bundle_product_parent_id = bundle_product_parent_import['data']
+				if not bundle_product_parent_id:
+					continue
+				catalog_product_relation_data = {
+					'parent_id': bundle_product_parent_id,
+					'child_id': product_id,
+				}
+				all_query.append(
+					self.create_insert_query_connector('catalog_product_relation', catalog_product_relation_data))
+
+				if 'parent_bundle_selection' in convert:
+					for parent_bundle_selection in convert['parent_bundle_selection']:
+						if parent_bundle_selection['parent_product_id'] != parent_bundle['id']:
+							continue
+						bundle_option_id = self.get_map_field_by_src(self.TYPE_BUNDLE_OPTION,
+																	 parent_bundle_selection['option_id'])
+						if not bundle_option_id:
+							continue
+						sequence_value = self.import_category_data_connector(
+							self.create_insert_query_connector('sequence_product_bundle_selection',
+															   {'sequence_value': ''}))
+						if not sequence_value:
+							continue
+						catalog_product_bundle_selection_data = {
+							'selection_id': sequence_value,
+							'product_id': product_id,
+							'option_id': bundle_option_id,
+							'parent_product_id': bundle_product_parent_id,
+							'position': parent_bundle_selection.get('position', 0),
+							'is_default': parent_bundle_selection.get('is_default', 0),
+							'selection_price_type': parent_bundle_selection.get('selection_price_type', 0),
+							'selection_price_value': parent_bundle_selection.get('selection_price_value', '0.0000'),
+							'selection_qty': parent_bundle_selection.get('selection_qty'),
+							'selection_can_change_qty': parent_bundle_selection.get('selection_can_change_qty', 0),
+						}
+						all_query.append(self.create_insert_query_connector('catalog_product_bundle_selection',
+																			catalog_product_bundle_selection_data))
+
+		# begin: bundle option
+
+		if 'bundle_option' in convert:
+			for bundle_option in convert['bundle_option']:
+				sequence_value = self.import_category_data_connector(
+					self.create_insert_query_connector('sequence_product_bundle_option', {'sequence_value': ''}))
+				if not sequence_value:
+					continue
+				self.insert_map(self.TYPE_BUNDLE_OPTION, bundle_option['option']['option_id'], sequence_value)
+
+				catalog_product_bundle_option_data = {
+					'option_id': sequence_value,
+					'parent_id': product_id,
+					'required': bundle_option.get('option', {}).get('required', 0),
+					'position': bundle_option.get('option', {}).get('position', 0),
+					'type': bundle_option.get('option', {}).get('type'),
+				}
+				all_query.append(self.create_insert_query_connector('catalog_product_bundle_option',
+													   catalog_product_bundle_option_data))
+				bundle_option_id = sequence_value
+
+				for bundle_option_value in bundle_option['value']:
+					catalog_product_bundle_option_value_data = {
+						'option_id': bundle_option_id,
+						'store_id': self.get_map_store_view(bundle_option_value.get('store_id', 0)),
+						'title': bundle_option_value.get('title')
+					}
+					if self.convert_version(self._notice['target']['config']['version'], 2) >= 220:
+						catalog_product_bundle_option_value_data['parent_product_id'] = product_id
+					all_query.append(self.create_insert_query_connector('catalog_product_bundle_option_value',
+																		catalog_product_bundle_option_value_data))
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: product relate,up-sell,cross-sell
+		# begin
+
+		if 'product_link_parent' in convert:
+			index = 1
+			for product_link_parent in convert['product_link_parent']:
+				if not product_link_parent['link_type_id']:
+					link_type_id = 1
+				else:
+					link_type_id = product_link_parent['link_type_id']
+				if to_int(link_type_id) == 3:
+					continue
+				children_id = self.get_map_field_by_src(self.TYPE_PRODUCT, product_link_parent['linked_product_id'])
+				if not children_id:
+					continue
+				if children_id == product_id:
+					continue
+				catalog_product_link_relate_data = {
+					"product_id": product_id,
+					"linked_product_id": children_id,
+					"link_type_id": link_type_id,
+				}
+				link_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_link', catalog_product_link_relate_data))
+				if link_id:
+					catalog_product_link_attribute_int = {
+						"product_link_attribute_id": link_type_id,
+						"link_id": link_id,
+						"value": index,
+					}
+					index += 1
+					all_query.append(self.create_insert_query_connector('catalog_product_link_attribute_int',
+																		catalog_product_link_attribute_int))
+
+		if 'product_link_children' in convert:
+			for product_link_children in convert['product_link_children']:
+				if not product_link_children['link_type_id']:
+					link_type_id = 1
+				else:
+					link_type_id = product_link_children['link_type_id']
+				if to_int(link_type_id) == 3:
+					continue
+				parent_id = self.get_map_field_by_src(self.TYPE_PRODUCT, product_link_children['linked_product_id'])
+				if not parent_id:
+					continue
+				if parent_id == product_id:
+					continue
+				catalog_product_link_relate_data = {
+					"product_id": parent_id,
+					"linked_product_id": product_id,
+					"link_type_id": link_type_id,
+				}
+				link_id = self.import_product_data_connector(
+					self.create_insert_query_connector('catalog_product_link', catalog_product_link_relate_data))
+				if link_id:
+					product_link_attribute_id = self.get_product_link_attribute_id(link_type_id)
+					query = "INSERT INTO _DBPRF_catalog_product_link_attribute_int (`product_link_attribute_id`,`link_id`, `value`)" \
+							" SELECT " + to_str(product_link_attribute_id) + ", " + to_str(link_id) + " ," \
+																									  " MAX(`value`)+1 FROM _DBPRF_catalog_product_link_attribute_int WHERE `link_id` IN " \
+																									  " (SELECT link_id FROM _DBPRF_catalog_product_link WHERE product_id = " + to_str(
+						parent_id) + " and link_type_id = " + to_str(link_type_id) + ")"
+					all_query.append({
+						'type': 'insert',
+						'query': query
+					})
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		# todo: attribute remain
+		# begin
+
+		if 'add_data' in convert:
+			for value in convert['add_data']:
+				attribute_target = product_eav_attribute_data.get(value['attribute_code'], dict())
+				if not attribute_target:
+					continue
+				attribute_id = attribute_target.get('attribute_id')
+
+				if not attribute_id:
+					continue
+
+				if 'product_value' in value:
+					product_values = value['product_value']
+					if value['frontend_input'] == 'select' and not value.get('boolean'):
+						for store_id, product_value in product_values.items():
+							option_id = self.get_map_field_by_src(self.TYPE_ATTR_OPTION, product_value)
+							if not option_id:
+								continue
+
+							catalog_product_entity_int_data = {
+								'attribute_id': attribute_id,
+								'store_id': 0,
+								'row_id': product_id,
+								'value': option_id,
+							}
+							all_query.append(self.create_insert_query_connector('catalog_product_entity_int',
+																				catalog_product_entity_int_data))
+							break
+					elif value['frontend_input'] == 'multiselect':
+						old_product_value = None
+						for store_id, product_value in product_values.items():
+							old_product_value = to_str(product_value).split(',')
+							break
+						new_data = None
+						new_product_value = list()
+						if isinstance(old_product_value, list):
+							for product_value in old_product_value:
+								option_id = self.get_map_field_by_src(self.TYPE_ATTR_OPTION, product_value)
+								if not option_id:
+									continue
+								new_product_value.append(str(option_id))
+							new_data = ','.join(new_product_value)
+						if new_data:
+							catalog_product_entity_type_data = {
+								'attribute_id': attribute_id,
+								'store_id': 0,
+								'row_id': product_id,
+								'value': new_data,
+							}
+							all_query.append(
+								self.create_insert_query_connector('catalog_product_entity_' + attribute_target['backend_type'],
+																   catalog_product_entity_type_data))
+					else:
+						list_store = list()
+						for store_id, product_value in product_values.items():
+							store_id_desc = self.get_map_store_view(store_id)
+							if store_id_desc in list_store:
+								continue
+							catalog_product_entity_type_data = {
+								'attribute_id': attribute_id,
+								'store_id': store_id_desc,
+								'row_id': product_id,
+								'value': product_value,
+							}
+							all_query.append(
+								self.create_insert_query_connector('catalog_product_entity_' + attribute_target['backend_type'],
+																   catalog_product_entity_type_data))
+
+		# end
+		# ------------------------------------------------------------------------------------------------------------------------
+		# todo: seo
+		# begin
+		seo_queries = list()
+		if 'url_rewrite_product' in convert:
+			for url_rewrite_product in convert['url_rewrite_product']:
+				store_id = self.get_map_store_view(url_rewrite_product['store_id'])
+				url_rewrite_product_data = {
+					'entity_type': 'product',
+					'entity_id': product_id,
+					'request_path': self.get_request_path(url_rewrite_product['request_path'], store_id),
+					'target_path': 'catalog/product/view/id/' + to_str(product_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': None,
+				}
+				seo_queries.append(self.create_insert_query_connector('url_rewrite', url_rewrite_product_data))
+		self.import_multiple_data_connector(seo_queries, 'seo')
+		# begin: url_rewrite with category
+		seo_queries = dict()
+		seo_data_categories = dict()
+		if 'url_rewrite_product_category' in convert:
+			for key, url_rewrite_product_category in enumerate(convert['url_rewrite_product_category']):
+				category_id = url_rewrite_product_category.get('category_id')
+				store_id = self.get_map_store_view(url_rewrite_product_category.get('store_id', 0))
+				if not category_id:
+					continue
+				category_desc_id = self.get_map_field_by_src(self.TYPE_CATEGORY, category_id)
+				if not category_desc_id:
+					continue
+				metadata = {
+					'category_id': category_desc_id
+				}
+				url_rewrite_data = {
+					'entity_type': 'product',
+					'entity_id': product_id,
+					'request_path': self.get_request_path(url_rewrite_product_category['request_path'], store_id),
+					'target_path': 'catalog/product/view/id/' + to_str(product_id) + '/category/' + to_str(category_desc_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': self.magento_serialize(metadata),
+				}
+				seo_queries[str(key)] = self.create_insert_query_connector('url_rewrite', url_rewrite_data, True)
+				seo_data_categories[str(key)] = category_desc_id
+
+		if seo_queries:
+			seo_import = self.import_multiple_seo_data_connector(seo_queries, 'seo')
+			if seo_import:
+				for key, value in enumerate(seo_import):
+					if value and to_str(key) in seo_data_categories:
+						catalog_product_url_rewrite_data = {
+							'url_rewrite_id': value,
+							'category_id': seo_data_categories.get(str(key)),
+							'product_id': product_id,
+						}
+						all_query.append(self.create_insert_query_connector('catalog_url_rewrite_product_category',
+																			catalog_product_url_rewrite_data))
+
+		# seo default
+		if not convert['url_rewrite_product'] and not convert['url_rewrite_product_category']:
+			seo_default = dict()
+			store_target = list(self._notice['map']['languages'].values())
+			store_target = list(map(lambda x: to_int(x), store_target))
+			if 0 not in store_target:
+				store_target.append(0)
+			for store_id in store_target:
+				try:
+					name = convert['languages'][to_str(store_id)]['name']
+				except:
+					name = convert['name']
+				if not name:
+					name = convert['name']
+				seo = self.generate_url_key(name)
+				seo = self.get_request_path(seo, store_id)
+				seo_default[store_id] = seo
+				url_rewrite_data = {
+					'entity_type': 'product',
+					'entity_id': product_id,
+					'request_path': seo,
+					'target_path': 'catalog/product/view/id/' + to_str(product_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': None,
+				}
+				self.import_category_data_connector(
+					self.create_insert_query_connector('url_rewrite', url_rewrite_data))
+
+				if convert['categories']:
+					for category in convert['categories']:
+						category_id = category['id']
+						if not category_id:
+							continue
+						category_desc = self.select_category_map(category_id)
+						if not category_desc:
+							continue
+						for category_row in category_desc:
+							metadata = {
+								'category_id': category_row['id_desc']
+							}
+							url_rewrite_data = {
+								'entity_type': 'product',
+								'entity_id': product_id,
+								'request_path': to_str(category_row['value']) + to_str(seo),
+								'target_path': 'catalog/product/view/id/' + to_str(product_id) + '/category/' + to_str(category_row['id_desc']),
+								'redirect_type': 0,
+								'store_id': store_id,
+								'description': None,
+								'is_autogenerated': 1,
+								'metadata': self.magento_serialize(metadata),
+							}
+							url_rewrite_id = self.import_product_data_connector(
+								self.create_insert_query_connector('url_rewrite', url_rewrite_data))
+							if not url_rewrite_id:
+								continue
+							catalog_product_url_rewrite_data = {
+								'url_rewrite_id': url_rewrite_id,
+								'category_id': category_row['id_desc'],
+								'product_id': product_id,
+							}
+							all_query.append(self.create_insert_query_connector('catalog_url_rewrite_product_category', catalog_product_url_rewrite_data))
+
+				# end
+		# ------------------------------------------------------------------------------------------------------------------------
+
+		self.import_multiple_data_connector(all_query, 'product')
+		return response_success()
+
+	def addition_product_import(self, convert, product, products_ext):
+		return response_success()
+
+	# TODO: REVIEW
+	def prepare_reviews_import(self):
+		return self
+
+	def prepare_reviews_export(self):
+		return self
+
+	def get_reviews_main_export(self):
+		id_src = self._notice['process']['reviews']['id_src']
+		limit = self._notice['setting']['reviews']
+		query = {
+			'type': 'select',
+			'query': "SELECT * FROM _DBPRF_review WHERE review_id > " + to_str(
+				id_src) + " ORDER BY review_id ASC LIMIT " + to_str(limit)
+		}
+		reviews = self.select_data_connector(query, 'orders')
+		if not reviews or reviews['result'] != 'success':
+			return response_error()
+		return reviews
+
+	def get_reviews_ext_export(self, reviews):
+		review_ids = duplicate_field_value_from_list(reviews['data'], 'review_id')
+		review_id_con = self.list_to_in_condition(review_ids)
+		url_query = self.get_connector_url('query')
+		store_id_con = self.get_con_store_select()
+		if store_id_con:
+			store_id_con = ' AND ' + store_id_con
+		review_ext_queries = {
+			'review_detail': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_review_detail WHERE review_id IN " + review_id_con + store_id_con
+			},
+			'rating_option_vote': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_rating_option_vote WHERE review_id IN " + review_id_con,
+			},
+			'review_store': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_review_store WHERE review_id IN " + review_id_con + store_id_con
+			}
+		}
+		reviews_ext = self.select_multiple_data_connector(review_ext_queries, 'orders')
+		if not reviews_ext or reviews_ext['result'] != 'success':
+			return response_error()
+		return reviews_ext
+
+	def convert_review_export(self, review, reviews_ext):
+		review_data = self.construct_review()
+		review_detail = get_row_from_list_by_field(reviews_ext['data']['review_detail'], 'review_id',
+												   review['review_id'])
+		review_data['id'] = review['review_id']
+		review_data['language_id'] = self._notice['src']['language_default']
+		review_data['product']['id'] = review['entity_pk_value']
+		if review_detail:
+			review_data['customer']['id'] = review_detail['customer_id']
+			review_data['customer']['name'] = review_detail['nickname']
+			review_data['title'] = review_detail['title']
+			review_data['content'] = review_detail['detail']
+
+		review_data['status'] = review['status_id']
+		review_data['created_at'] = review['created_at']
+		review_data['updated_at'] = review['created_at']
+
+		rating = self.construct_review_rating()
+		rating_option_vote = get_list_from_list_by_field(reviews_ext['data']['rating_option_vote'], 'review_id',
+														 review['review_id'])
+		rate_value = 0.0
+		rating['rate_code'] = 'default'
+		if rating_option_vote:
+			rating_vote = list()
+			for vote in rating_option_vote:
+				rating_vote_data = dict()
+				rating_vote_data['remote_ip'] = vote['remote_ip']
+				rating_vote_data['percent'] = vote['percent']
+				rating_vote_data['rating_id'] = vote['rating_id']
+				rate_value += (to_decimal(vote['percent']) / 10)
+				rating_vote.append(rating_vote_data)
+			review_data['rating_vote'] = rating_vote
+			rating['rate'] = to_decimal(rate_value) / to_decimal(to_len(rating_option_vote))
+		if rate_value:
+			rating['rate'] = round(rate_value / to_len(rating_option_vote)) * 10
+		else:
+			rating['rate'] = 0.0
+
+		review_data['rating'].append(rating)
+
+		multi_store = get_list_from_list_by_field(reviews_ext['data']['review_store'], 'review_id',
+												  review['review_id'])
+		if multi_store:
+			review_data['multi_store'] = duplicate_field_value_from_list(multi_store, 'store_id')
+		return response_success(review_data)
+
+	def get_review_id_import(self, convert, review, reviews_ext):
+		return review['review_id']
+
+	# TODO: PAGE
+	def prepare_pages_import(self):
+		return self
+
+	def prepare_pages_export(self):
+		return self
+
+	def get_pages_main_export(self):
+		id_src = self._notice['process']['pages']['id_src']
+		limit = self._notice['setting']['pages']
+		query = {
+			'type': 'select',
+			'query': "SELECT * FROM _DBPRF_cms_page WHERE "
+					 "page_id > " + to_str(id_src) + " ORDER BY page_id ASC LIMIT " + to_str(limit)
+		}
+		pages = self.select_data_connector(query, 'pages')
+		if not pages or pages['result'] != 'success':
+			return response_error()
+		return pages
+
+	def get_pages_ext_export(self, pages):
+		page_ids = duplicate_field_value_from_list(pages['data'], 'page_id')
+		page_id_con = self.list_to_in_condition(page_ids)
+		pages_ext_queries = {
+			'cms_page_store': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_cms_page_store WHERE row_id IN " + page_id_con
+			},
+		}
+		pages_ext = self.select_multiple_data_connector(pages_ext_queries, 'pages')
+		if not pages_ext or pages_ext['result'] != 'success':
+			return response_error()
+		return pages_ext
+
+	def convert_page_export(self, page, pages_ext):
+		page_data = page
+		page_data['id'] = page['page_id']
+		# page_data['page_layout'] = page['root_template']
+		stores = get_list_from_list_by_field(pages_ext['data']['cms_page_store'], 'page_id', page['page_id'])
+		page_data['stores'] = list()
+		for store in stores:
+			page_data['stores'].append(store['store_id'])
+		del (page_data['page_id'])
+		page_data['content'] = self.convert_image_in_description(page['content'])
+
+		# del (page_data['root_template'])
+		return response_success(page_data)
+
+	def get_page_id_import(self, convert, page, pages_ext):
+		return page['page_id']
+
+	def check_page_import(self, convert, page, pages_ext):
+		return True if self.get_map_field_by_src(self.TYPE_PAGE, convert['id']) else False
+
+	def router_page_import(self, convert, page, pages_ext):
+		return response_success('page_import')
+
+	def before_page_import(self, convert, page, pages_ext):
+		return response_success()
+
+	def page_import(self, convert, page, pages_ext):
+		sequence_value = self.import_category_data_connector(self.create_insert_query_connector('sequence_cms_page', {'sequence_value': ''}))
+		if not sequence_value:
+			return response_error('cannot create sequence page')
+		router = get_value_by_key_in_dict(convert, 'identifier')
+		if not router:
+			router = self.generate_url_key(get_value_by_key_in_dict(convert, 'title'))
+		index = 1
+		new_router = router
+		while self.check_exist_url_cms(self.TYPE_PAGE, new_router):
+			new_router = router + '-' + to_str(index)
+			index += 1
+		router = new_router
+		page_entity_data = {
+			'page_id': sequence_value,
+			'title': get_value_by_key_in_dict(convert, 'title'),
+			'page_layout': self.get_page_layout(get_value_by_key_in_dict(convert, 'page_layout')),
+			'meta_keywords': get_value_by_key_in_dict(convert, 'meta_keywords'),
+			'meta_description': get_value_by_key_in_dict(convert, 'meta_description'),
+			'identifier': router,
+			'content_heading': get_value_by_key_in_dict(convert, 'content_heading'),
+			'content': self.change_img_src_in_text(get_value_by_key_in_dict(convert, 'content'), True),
+			'creation_time': get_value_by_key_in_dict(convert, 'creation_time', get_current_time()),
+			'update_time': get_value_by_key_in_dict(convert, 'update_time', get_current_time()),
+			'is_active': get_value_by_key_in_dict(convert, 'is_active', 1),
+			'sort_order': get_value_by_key_in_dict(convert, 'sort_order', 0),
+			'layout_update_xml': self.get_layout_update_xml(get_value_by_key_in_dict(convert, 'layout_update_xml')),
+			'custom_theme': None,
+			'custom_root_template': self.get_page_layout(get_value_by_key_in_dict(convert, 'custom_root_template')),
+			'custom_layout_update_xml': self.get_layout_update_xml(get_value_by_key_in_dict(convert, 'custom_layout_update_xml')),
+			'custom_theme_from': get_value_by_key_in_dict(convert, 'custom_theme_from'),
+			'custom_theme_to': get_value_by_key_in_dict(convert, 'custom_theme_to'),
+			'meta_title': get_value_by_key_in_dict(convert, 'meta_title'),
+		}
+		page_id = self.import_page_data_connector(self.create_insert_query_connector('cms_page', page_entity_data), True, convert['id'])
+		if not page_id:
+			return response_error()
+		self.insert_map(self.TYPE_PAGE, convert['id'], page_id, None, router)
+		return response_success(page_id)
+
+	def after_page_import(self, page_id, convert, page, pages_ext):
+		url = self.select_map(self._migration_id, self.TYPE_PAGE, convert['id'])
+		all_queries = list()
+		if convert.get('stores'):
+			list_stores = list()
+			for store_id in convert['stores']:
+				store_desc_id = self.get_map_store_view(store_id)
+				if to_str(store_desc_id) in list_stores:
+					continue
+				list_stores.append(to_str(store_desc_id))
+				page_store_data = {
+					'row_id': page_id,
+					'store_id': store_desc_id,
+				}
+				all_queries.append(self.create_insert_query_connector('cms_page_store', page_store_data))
+				page_url_data = {
+					'entity_type': 'cms-page',
+					'entity_id': page_id,
+					'request_path': url['code_desc'],
+					'target_path': 'cms/page/view/page_id/' + to_str(page_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': None,
+				}
+				all_queries.append(self.create_insert_query_connector('url_rewrite', page_url_data))
+
+		if all_queries:
+			self.import_multiple_data_connector(all_queries, 'pages')
+		return response_success()
+
+	def addition_page_import(self, convert, page, pages_ext):
+		return response_success()
+
+	# TODO: BLOCK
+	def prepare_blogs_import(self):
+		parent = super().prepare_blogs_export()
+		attribute_queries = {
+			'type': "select",
+			'query': "SELECT * FROM _DBPRF_eav_attribute WHERE entity_type_id = " + to_str(self._notice['target']['extends']['catalog_category']) + " AND attribute_code = 'landing_page'",
+		}
+		product_eav_attribute = self.select_data_connector(attribute_queries)
+		if product_eav_attribute and product_eav_attribute['result'] == 'success' and product_eav_attribute['data']:
+			attribute_landing_page = product_eav_attribute['data'][0]
+			self.update_map('attr_landing_page', None, None, attribute_landing_page['attribute_id'])
+		return self
+
+	def prepare_blogs_export(self):
+		parent = super().prepare_blogs_export()
+		attribute_queries = {
+			'type': "select",
+			'query': "SELECT * FROM _DBPRF_eav_attribute WHERE entity_type_id = " + to_str(self._notice['src']['extends']['catalog_category']) + " AND attribute_code = 'landing_page'",
+		}
+		product_eav_attribute = self.select_data_connector(attribute_queries)
+		if product_eav_attribute and product_eav_attribute['result'] == 'success' and product_eav_attribute['data']:
+			attribute_landing_page = product_eav_attribute['data'][0]
+			self.insert_map('attr_landing_page', attribute_landing_page['attribute_id'], None, 'landing_page')
+		return self
+
+	def get_blogs_main_export(self):
+		id_src = self._notice['process']['blogs']['id_src']
+		limit = self._notice['setting'].get('blogs', 4)
+		query = {
+			'type': 'select',
+			'query': "SELECT * FROM _DBPRF_cms_block WHERE "
+					 "block_id > " + to_str(id_src) + " ORDER BY block_id ASC LIMIT " + to_str(limit)
+		}
+		blocks = self.select_data_connector(query, 'blogs')
+		if not blocks or blocks['result'] != 'success':
+			return response_error()
+		return blocks
+
+	def get_blogs_ext_export(self, blocks):
+		block_ids = duplicate_field_value_from_list(blocks['data'], 'block_id')
+		block_id_con = self.list_to_in_condition(block_ids)
+		attr_landing_page = self.select_map(self._migration_id, 'attr_landing_page')
+		attr_landing_page_id = attr_landing_page['id_src']
+		blocks_ext_queries = {
+			'cms_blog_store': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_cms_block_store WHERE row_id IN " + block_id_con
+			},
+			'category_block': {
+				'type': 'select',
+				'query': "SELECT value as block_id,row_id as category_id,store_id FROM _DBPRF_catalog_category_entity_int WHERE attribute_id = '" + to_str(
+					attr_landing_page_id) + "' AND value IN " + block_id_con,
+			}
+		}
+		blocks_ext = self.select_multiple_data_connector(blocks_ext_queries, 'blogs')
+		if not blocks_ext or blocks_ext['result'] != 'success':
+			return response_error()
+		return blocks_ext
+
+	def convert_blog_export(self, block, blocks_ext):
+		block_data = block
+		block_data['id'] = block['block_id']
+		stores = get_list_from_list_by_field(blocks_ext['data']['cms_blog_store'], 'row_id', block_data['id'])
+		block_data['stores'] = list()
+		for store in stores:
+			block_data['stores'].append(store['store_id'])
+		block_data['category_block'] = get_list_from_list_by_field(blocks_ext['data']['category_block'], 'row_id',
+																   block['block_id'])
+		block_data['content'] = self.convert_image_in_description(block['content'])
+		del (block_data['block_id'])
+		return response_success(block_data)
+
+	def get_blog_id_import(self, convert, block, blocks_ext):
+		return block['block_id']
+
+	def check_blog_import(self, convert, block, blocks_ext):
+		return True if self.get_map_field_by_src(self.TYPE_BLOG, convert['id']) else False
+
+	def router_blog_import(self, convert, block, blocks_ext):
+		return response_success('block_import')
+
+	def before_blog_import(self, convert, block, blocks_ext):
+		return response_success()
+
+	def blog_import(self, convert, block, blocks_ext):
+		sequence_value = self.import_category_data_connector(self.create_insert_query_connector('sequence_cms_block', {'sequence_value': ''}))
+		if not sequence_value:
+			return response_error('cannot create sequence block')
+		router = get_value_by_key_in_dict(convert, 'identifier')
+		if not router:
+			router = self.generate_url_key(get_value_by_key_in_dict(convert, 'title'))
+		index = 1
+		new_router = router
+		while self.check_exist_url_cms(self.TYPE_BLOG, new_router):
+			new_router = router + '-' + to_str(index)
+			index += 1
+		router = new_router
+		block_entity_data = {
+			'block_id': sequence_value,
+			'title': get_value_by_key_in_dict(convert, 'title'),
+			'identifier': router,
+			'content': get_value_by_key_in_dict(convert, 'content'),
+			'creation_time': get_value_by_key_in_dict(convert, 'creation_time', get_current_time()),
+			'update_time': get_value_by_key_in_dict(convert, 'update_time', get_current_time()),
+			'is_active': get_value_by_key_in_dict(convert, 'is_active', 1),
+		}
+		block_id = self.import_blog_data_connector(self.create_insert_query_connector('cms_block', block_entity_data), True, convert['id'])
+		if not block_id:
+			return response_error()
+		self.insert_map(self.TYPE_BLOG, convert['id'], block_id, None, router)
+		return response_success(block_id)
+
+	def after_blog_import(self, block_id, convert, block, blocks_ext):
+		url = self.select_map(self._migration_id, self.TYPE_BLOG, convert['id'])
+		all_queries = list()
+		if convert.get('stores'):
+			list_stores = list()
+			for store_id in convert['stores']:
+				store_desc_id = self.get_map_store_view(store_id)
+				if to_str(store_desc_id) in list_stores:
+					continue
+				list_stores.append(to_str(store_desc_id))
+				block_store_data = {
+					'row_id': block_id,
+					'store_id': store_desc_id,
+				}
+				all_queries.append(self.create_insert_query_connector('cms_blog_store', block_store_data))
+				block_url_data = {
+					'entity_type': 'cms-block',
+					'entity_id': block_id,
+					'request_path': url['code_desc'],
+					'target_path': 'cms/block/view/block_id/' + to_str(block_id),
+					'redirect_type': 0,
+					'store_id': store_id,
+					'description': None,
+					'is_autogenerated': 1,
+					'metadata': None,
+				}
+				all_queries.append(self.create_insert_query_connector('url_rewrite', block_url_data))
+		if convert.get('category_block'):
+			attr_landing_page = self.select_map(self._migration_id, 'attr_landing_page')
+			attr_landing_page_id = attr_landing_page['id_desc']
+			for item in convert['category_block']:
+				category_id = self.get_map_field_by_src(self.TYPE_CATEGORY, item['category_id'])
+				if category_id:
+					category_blog_data = {
+						'attribute_id': attr_landing_page_id,
+						'store_id': self.get_map_store_view(item['store_id']),
+						'entity_id': category_id,
+						'value': block_id,
+					}
+					all_queries.append(self.create_insert_query_connector('catalog_category_entity_int', category_blog_data))
+		if all_queries:
+			self.import_multiple_data_connector(all_queries, 'blogs')
+		return response_success()
+
+	def addition_blog_import(self, convert, block, blocks_ext):
+		return response_success()
+
+	# TODO: COUPON
+	def prepare_coupons_import(self):
+		return response_success()
+
+	def prepare_coupons_export(self):
+		return self
+
+	def get_coupons_main_export(self):
+		id_src = self._notice['process']['coupons']['id_src']
+		limit = self._notice['setting'].get('coupons', 4)
+		query = {
+			'type': 'select',
+			'query': "SELECT * FROM _DBPRF_salesrule WHERE "
+					 "rule_id > " + to_str(id_src) + " ORDER BY rule_id ASC LIMIT " + to_str(limit)
+		}
+		coupons = self.select_data_connector(query, 'coupons')
+		if not coupons or coupons['result'] != 'success':
+			return response_error()
+		return coupons
+
+	def get_coupons_ext_export(self, coupons):
+		rule_ids = duplicate_field_value_from_list(coupons['data'], 'rule_id')
+		rule_id_con = self.list_to_in_condition(rule_ids)
+		coupons_ext_queries = {
+			'salesrule_coupon': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_coupon WHERE rule_id IN " + rule_id_con
+			},
+			'salesrule_customer': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_customer WHERE rule_id IN " + rule_id_con,
+			},
+			'salesrule_customer_group': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_customer_group WHERE row_id IN " + rule_id_con,
+			},
+			'salesrule_website': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_website WHERE row_id IN " + rule_id_con,
+			},
+			'salesrule_label': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_label WHERE rule_id IN " + rule_id_con,
+			},
+			'salesrule_product_attribute': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_product_attribute WHERE row_id IN " + rule_id_con,
+			}
+		}
+		coupons_ext = self.select_multiple_data_connector(coupons_ext_queries, 'coupons')
+		if not coupons_ext or coupons_ext['result'] != 'success':
+			return response_error()
+		coupon_ids = duplicate_field_value_from_list(coupons_ext['data']['salesrule_coupon'], 'coupon_id')
+		coupon_id_con = self.list_to_in_condition(coupon_ids)
+		coupons_ext_queries_rel = {
+			'salesrule_coupon_usage': {
+				'type': 'select',
+				'query': "SELECT * FROM _DBPRF_salesrule_coupon_usage WHERE coupon_id IN " + coupon_id_con
+			},
+		}
+		coupons_ext_rel = self.select_multiple_data_connector(coupons_ext_queries_rel, 'coupons')
+
+		if not coupons_ext_rel or coupons_ext_rel['result'] != 'success':
+			return response_error()
+		coupons_ext = self.sync_connector_object(coupons_ext, coupons_ext_rel)
+		return coupons_ext
+
+	def convert_coupon_export(self, coupon, coupons_ext):
+		rule_id = coupon['rule_id']
+		rule_data = coupon
+		rule_data['id'] = rule_id
+		coupons = get_list_from_list_by_field(coupons_ext['data']['salesrule_coupon'], 'rule_id', rule_id)
+		rule_data['label'] = get_list_from_list_by_field(coupons_ext['data']['salesrule_label'], 'rule_id', rule_id)
+		customers = get_list_from_list_by_field(coupons_ext['data']['salesrule_customer'], 'rule_id', rule_id)
+		rule_data['customer'] = list()
+		for customer in customers:
+			del (customer['rule_customer_id'])
+			del (customer['rule_id'])
+			rule_data['customer'].append(customer)
+		rule_data['customer_group'] = list()
+		customer_groups = get_list_from_list_by_field(coupons_ext['data']['salesrule_customer_group'], 'row_id',
+													  rule_id)
+		customer_group_ids = list()
+		for customer_group in customer_groups:
+			group_id = self._notice['map']['customer_group'].get(to_str(customer_group['customer_group_id']))
+			if group_id not in customer_group_ids:
+				customer_group_ids.append(group_id)
+		rule_data['customer_group'] = customer_group_ids
+		rule_data['rule_website'] = list()
+		rule_website = get_list_from_list_by_field(coupons_ext['data']['salesrule_website'], 'row_id', rule_id)
+		rule_data['rule_website'] = duplicate_field_value_from_list(rule_website, 'website_id')
+		rule_data['conditions'] = self.magento_unserialize(coupon['conditions_serialized'])
+		rule_data['actions'] = self.magento_unserialize(coupon['actions_serialized'])
+		rule_data['coupon'] = list()
+		for coupon_row in coupons:
+			usage = get_list_from_list_by_field(coupons_ext['data']['salesrule_coupon_usage'], 'coupon_id',
+												coupon_row['coupon_id'])
+			coupon_data = dict()
+			coupon_data['data'] = copy.deepcopy(coupon_row)
+			coupon_data['usage'] = usage
+			rule_data['coupon'].append(coupon_data)
+		del (rule_data['conditions_serialized'])
+		del (rule_data['actions_serialized'])
+		del (rule_data['rule_id'])
+		return response_success(rule_data)
+
+	def get_coupon_id_import(self, convert, coupon, coupons_ext):
+		return coupon['rule_id']
+
+	def check_coupon_import(self, convert, coupon, coupons_ext):
+		return True if self.get_map_field_by_src(self.TYPE_COUPON, convert['id']) else False
+
+	def router_coupon_import(self, convert, coupon, coupons_ext):
+		return response_success('coupon_import')
+
+	def before_coupon_import(self, convert, coupon, coupons_ext):
+		return response_success()
+
+	def coupon_import(self, convert, coupon, coupons_ext):
+		sequence_value = self.import_category_data_connector(self.create_insert_query_connector('sequence_salesrule', {'sequence_value': ''}))
+		if not sequence_value:
+			return response_error('cannot create sequence coupon')
+		product_ids = convert.get('product_ids')
+		if product_ids:
+			product_id_arr = product_ids.split(',')
+			product_id_map_arr = list()
+			for product_id in product_id_arr:
+				map_product_id = self.get_map_field_by_src(self.TYPE_PRODUCT, product_id)
+				if map_product_id:
+					product_id_map_arr.append(map_product_id)
+			if product_id_map_arr:
+				product_ids = ','.join(product_id_map_arr)
+			else:
+				product_ids = None
+		conditions = convert.get('conditions')
+		if conditions:
+			conditions = self.get_conditions_option(conditions)
+			if conditions:
+				conditions = self.magento_serialize(conditions)
+			# conditions = conditions.replace('\\','\\\\')
+		actions = convert.get('actions')
+		if actions:
+			actions = self.get_conditions_option(actions)
+			if actions:
+				actions = self.magento_serialize(actions)
+			# actions = actions.replace('\\','\\\\')
+		rule_data = {
+			'rule_id': sequence_value,
+			'name': get_value_by_key_in_dict(convert, 'name'),
+			'description': get_value_by_key_in_dict(convert, 'description'),
+			'from_date': get_value_by_key_in_dict(convert, 'from_date'),
+			'to_date': get_value_by_key_in_dict(convert, 'to_date'),
+			'uses_per_customer': get_value_by_key_in_dict(convert, 'uses_per_customer', 0),
+			'is_active': get_value_by_key_in_dict(convert, 'is_active', 0),
+			'conditions_serialized': conditions,
+			'actions_serialized': actions,
+			'product_ids': product_ids,
+			'is_advanced': get_value_by_key_in_dict(convert, 'is_advanced', 1),
+			'stop_rules_processing': get_value_by_key_in_dict(convert, 'stop_rules_processing', 1),
+			'sort_order': get_value_by_key_in_dict(convert, 'sort_order', 0),
+			'simple_action': get_value_by_key_in_dict(convert, 'simple_action'),
+			'discount_qty': get_value_by_key_in_dict(convert, 'discount_qty'),
+			'discount_amount': get_value_by_key_in_dict(convert, 'discount_amount', 0),
+			'discount_step': get_value_by_key_in_dict(convert, 'discount_step', 0),
+			'apply_to_shipping': get_value_by_key_in_dict(convert, 'apply_to_shipping', 0),
+			'times_used': get_value_by_key_in_dict(convert, 'times_used', 0),
+			'is_rss': get_value_by_key_in_dict(convert, 'is_rss', 0),
+			'coupon_type': get_value_by_key_in_dict(convert, 'coupon_type', 1),
+			'use_auto_generation': get_value_by_key_in_dict(convert, 'use_auto_generation', 0),
+			'uses_per_coupon': get_value_by_key_in_dict(convert, 'uses_per_coupon', 0),
+			'simple_free_shipping': get_value_by_key_in_dict(convert, 'simple_free_shipping'),
+		}
+		coupon_id = self.import_rule_data_connector(self.create_insert_query_connector('salesrule', rule_data), True, convert['id'])
+		if not coupon_id:
+			return response_error()
+		self.insert_map(self.TYPE_COUPON, convert['id'], coupon_id)
+		return response_success(coupon_id)
+
+	def after_coupon_import(self, coupon_id, convert, coupon, coupons_ext):
+		all_queries = list()
+		if 'rule_website' in convert:
+			website_ids = self.get_website_ids_target_by_id_src(convert['rule_website'])
+			for website_id in website_ids:
+				rule_website_data = {
+					'row_id': coupon_id,
+					'website_id': website_id
+				}
+				all_queries.append(self.create_insert_query_connector('salesrule_website', rule_website_data))
+
+		for customer in convert['customer']:
+			customer_id = self.get_map_field_by_src(self.TYPE_CUSTOMER, customer['customer_id'])
+			if not customer_id:
+				continue
+			rule_customer_data = {
+				'rule_id': coupon_id,
+				'customer_id': customer_id,
+				'times_used': get_value_by_key_in_dict(customer, 'times_used', 0)
+			}
+			all_queries.append(self.create_insert_query_connector('salesrule_customer', rule_customer_data))
+		for customer_group in convert['customer_group']:
+			rule_customer_group_data = {
+				'row_id': coupon_id,
+				'customer_group_id': customer_group,
+			}
+			all_queries.append(self.create_insert_query_connector('salesrule_customer_group', rule_customer_group_data))
+
+		if 'label' in convert:
+			list_stores = list()
+			for label in convert['label']:
+				store_id = self.get_map_store_view(label['store_id'])
+				if store_id in list_stores:
+					continue
+				list_stores.append(store_id)
+				rule_label_data = {
+					'rule_id': coupon_id,
+					'store_id': store_id,
+					'label': get_value_by_key_in_dict(label, 'label')
+				}
+				all_queries.append(
+					self.create_insert_query_connector('salesrule_label', rule_label_data))
+
+		for coupon_row in convert['coupon']:
+			coupon_data = coupon_row['data']
+			coupon_code = get_value_by_key_in_dict(coupon_data, 'code')
+			if not coupon_code:
+				continue
+			rule_coupon_data = {
+				'rule_id': coupon_id,
+				'code': coupon_code,
+				'usage_limit': get_value_by_key_in_dict(coupon_data, 'usage_limit'),
+				'usage_per_customer': get_value_by_key_in_dict(coupon_data, 'usage_per_customer'),
+				'times_used': get_value_by_key_in_dict(coupon_data, 'times_used', 0),
+				'expiration_date': get_value_by_key_in_dict(coupon_data, 'expiration_date'),
+				'is_primary': get_value_by_key_in_dict(coupon_data, 'is_primary'),
+				'created_at': get_value_by_key_in_dict(coupon_data, 'created_at'),
+				'type': get_value_by_key_in_dict(coupon_data, 'type'),
+			}
+			coupon_row_id = self.import_rule_data_connector(self.create_insert_query_connector('salesrule_coupon', rule_coupon_data))
+			if not coupon_row_id:
+				continue
+			if 'usage' in coupon:
+				for usage in coupon['usage']:
+					customer_id = self.get_map_field_by_src(self.TYPE_CUSTOMER, usage['customer_id'])
+					if not customer_id:
+						continue
+					coupon_usage_data = {
+						'coupon_id': coupon_row_id,
+						'customer_id': customer_id,
+						'times_used': get_value_by_key_in_dict(usage, 'times_used', 0)
+					}
+					all_queries.append(self.create_insert_query_connector('salesrule_coupon_usage', coupon_usage_data))
+		if all_queries:
+			self.import_multiple_data_connector(all_queries, 'coupons')
+		return response_success()
+
+	def addition_coupon_import(self, convert, coupon, coupons_ext):
+		return response_success()
+
+	# TODO: CARTRULE
+	def prepare_cartrules_import(self):
+		return self
+
+	def prepare_cartrules_export(self):
+		return self
+
+	def get_cartrules_main_export(self):
+		return response_success()
+
+	def get_cartrules_ext_export(self, cartrules):
+		return response_success()
+
+	def convert_cartrule_export(self, cartrule, cartrules_ext):
+		return response_success()
+
+	def get_cartrule_id_import(self, convert, cartrule, coupons_ext):
+		return cartrule['rule_id']
+
+	def check_cartrule_import(self, convert, cartrule, cartrules_ext):
+		return True if self.get_map_field_by_src(self.TYPE_CART_RULE, convert['id']) else False
+
+	def router_cartrule_import(self, convert, cartrule, cartrules_ext):
+		return response_success('cartrule_import')
+
+	def before_cartrule_import(self, convert, cartrule, cartrules_ext):
+		return response_success()
+
+	def cartrule_import(self, convert, cartrule, cartrules_ext):
+		sequence_value = self.import_category_data_connector(self.create_insert_query_connector('sequence_catalogrule', {'sequence_value': ''}))
+		if not sequence_value:
+			return response_error('cannot create sequence cartrule')
+		conditions = convert.get('conditions')
+		if conditions:
+			conditions = self.get_conditions_option(conditions)
+			if conditions:
+				conditions = self.magento_serialize(conditions)
+			# conditions = conditions.replace('\\', '\\\\')
+		actions = convert.get('actions')
+		if actions:
+			actions = self.get_conditions_option(actions)
+			if actions:
+				actions = self.magento_serialize(actions)
+			# actions = actions.replace('\\', '\\\\')
+		cart_rule_data = {
+			'rule_id': sequence_value,
+			'name': get_value_by_key_in_dict(convert, 'name'),
+			'description': get_value_by_key_in_dict(convert, 'description'),
+			'from_date': get_value_by_key_in_dict(convert, 'from_date'),
+			'to_date': get_value_by_key_in_dict(convert, 'to_date'),
+			'is_active': get_value_by_key_in_dict(convert, 'is_active', 1),
+			'conditions_serialized': conditions,
+			'actions_serialized': actions,
+			'stop_rules_processing': get_value_by_key_in_dict(convert, 'stop_rules_processing', 1),
+			'sort_order': get_value_by_key_in_dict(convert, 'sort_order', 0),
+			'simple_action': get_value_by_key_in_dict(convert, 'simple_action'),
+			'discount_amount': get_value_by_key_in_dict(convert, 'discount_amount', 0.00),
+		}
+		cartrule_id = self.import_cartrule_data_connector(self.create_insert_query_connector('catalogrule', cart_rule_data), True, convert['id'])
+		if not cartrule_id:
+			return response_error()
+		self.insert_map(self.TYPE_CART_RULE, convert['id'], cartrule_id)
+		return response_success(cartrule_id)
+
+	def after_cartrule_import(self, cartrule_id, convert, cartrule, cartrules_ext):
+		all_queries = list()
+		for customer_group in convert['customer_group']:
+			rule_customer_group_data = {
+				'row_id': cartrule_id,
+				'customer_group_id': customer_group,
+			}
+			all_queries.append(self.create_insert_query_connector('catalogrule_customer_group', rule_customer_group_data))
+
+		for product in convert['product']:
+			group_id = self._notice['map']['customer_group'].get(get_value_by_key_in_dict(product, 'customer_group_id', 0))
+			product_id = self.get_map_field_by_src(self.TYPE_PRODUCT, product['product_id'])
+			if not product_id:
+				continue
+			cartrule_product_data = {
+				'rule_id': cartrule_id,
+				'from_time': get_value_by_key_in_dict(product, 'from_time'),
+				'to_time': get_value_by_key_in_dict(product, 'to_time'),
+				'customer_group_id': group_id,
+				'product_id': product_id,
+				'action_operator': get_value_by_key_in_dict(product, 'action_operator'),
+				'action_amount': get_value_by_key_in_dict(product, 'action_amount', 0.00),
+				'action_stop': get_value_by_key_in_dict(product, 'action_stop', 0),
+				'sort_order': get_value_by_key_in_dict(product, 'sort_order', 0),
+				'website_id': 0,
+			}
+			all_queries.append(self.create_insert_query_connector('catalogrule_product', cartrule_product_data))
+		if 'cartrule_website' in convert:
+			website_ids = self.get_website_ids_target_by_id_src(convert['cartrule_website'])
+			for website_id in website_ids:
+				rule_website_data = {
+					'row_id': cartrule_id,
+					'website_id': website_id
+				}
+				all_queries.append(self.create_insert_query_connector('catalogrule_website', rule_website_data))
+		if all_queries:
+			self.import_multiple_data_connector(all_queries, 'cartrules')
+		return response_success()
+
+	def addition_cartrule_import(self, convert, cartrule, cartrules_ext):
+		return response_success()
+
+	# todo: code magento
